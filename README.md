@@ -2,7 +2,6 @@
   <img src="https://github.com/ubicloud/ubicloud/assets/2545443/3ce4d335-1275-461a-b167-af2633c06d58">
 </p>
 
----
 
 # Ubicloud [![CI](https://github.com/ubicloud/ubicloud/actions/workflows/ci.yml/badge.svg)](https://github.com/ubicloud/ubicloud/actions/workflows/ci.yml) [![Build](https://github.com/ubicloud/ubicloud/actions/workflows/build.yml/badge.svg)](https://github.com/ubicloud/ubicloud/actions/workflows/build.yml)
 
