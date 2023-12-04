@@ -1,0 +1,73 @@
+name: CI7
+
+on:
+  schedule:
+    - cron:  '*/1 * * * *'
+
+jobs:
+  ruby-ci:
+    runs-on: ubicloud
+
+    env:
+      DB_USER: clover
+      DB_PASSWORD: nonempty
+      DB_NAME: clover_test
+
+    services:
+      postgres:
+        image: postgres:15.4
+        env:
+          POSTGRES_USER: ${{ env.DB_USER }}
+          POSTGRES_PASSWORD: ${{ env.DB_PASSWORD }}
+          POSTGRES_DB: ${{ env.DB_NAME }}
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+    - name: Perform superuser-only actions, then remove superuser
+      run: |
+        psql "postgres://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@localhost:5432/${{ env.DB_NAME }}" \
+          -c "CREATE EXTENSION citext; CREATE EXTENSION btree_gist; CREATE ROLE clover_password PASSWORD '${{ env.DB_PASSWORD }}' LOGIN; ALTER ROLE ${{ env.DB_USER }} NOSUPERUSER"
+
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Set up Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: .tool-versions
+        bundler-cache: true
+
+    - name: Run erb-formatter
+      run: |
+        bundle exec rake linter:erb_formatter
+        git diff --exit-code
+
+    - name: Run rubocop
+      run: bundle exec rake linter:rubocop
+
+    - name: Run brakeman
+      run: bundle exec rake linter:brakeman
+
+    - name: Apply migrations
+      env:
+        CLOVER_DATABASE_URL: postgres://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@localhost:5432/${{ env.DB_NAME }}
+      run: bundle exec rake test_up
+
+    - name: Run controlplane tests
+      env:
+        CLOVER_DATABASE_URL: postgres://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@localhost:5432/${{ env.DB_NAME }}
+        CLOVER_SESSION_SECRET: kbaf1V3biZ+R2QqFahgDLB5/lSomwxQusA4PwROUkFS1srn0xM/I47IdLW7HjbQoxWri6/aVgtkqTLFiP65h9g==
+        CLOVER_COLUMN_ENCRYPTION_KEY: TtlY0+hd4lvedPkNbu5qsj5H7giPKJSRX9KDBrvid7c=
+      run: COVERAGE=1 bundle exec rspec
+
+    - name: Run dataplane tests
+      run: bundle exec rspec -O /dev/null rhizome
+
+    - name: Archive code coverage results
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: code-coverage-report
+        path: coverage/
