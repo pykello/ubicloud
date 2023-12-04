@@ -7,11 +7,6 @@ on:
         description: 'Full tag names seperated by comma. i.e.: ubicloud/ubicloud:0.1, ubicloud/ubicloud:latest'
         required: true
         type: string
-  push:
-    branches:
-      - 'main'
-    tags:
-      - 'v*'
 
 env:
   IMAGE_NAME: ubicloud/ubicloud
