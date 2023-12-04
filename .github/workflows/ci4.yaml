@@ -1,8 +1,8 @@
 name: CI4
 
 on:
-#  schedule:
-#    - cron:  '*/1 * * * *'
+  schedule:
+    - cron:  '*/1 * * * *'
 
 jobs:
   ruby-ci:
