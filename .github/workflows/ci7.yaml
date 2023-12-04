@@ -1,6 +1,7 @@
 name: CI7
 
 on:
+  workflow_dispatch:
 #  schedule:
 #    - cron:  '*/1 * * * *'
 
