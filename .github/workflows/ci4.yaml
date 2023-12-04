@@ -2,7 +2,7 @@ name: CI4
 
 on:
   schedule:
-    - cron:  '*/1 * * * *'
+    - cron:  '*/13 * * * *'
 
 jobs:
   ruby-ci:
