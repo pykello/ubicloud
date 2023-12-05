@@ -3,7 +3,7 @@ name: CI7
 on:
   workflow_dispatch:
   schedule:
-    - cron:  '*/16 * * * *'
+    - cron:  '*/7 * * * *'
 
 jobs:
   ruby-ci:
