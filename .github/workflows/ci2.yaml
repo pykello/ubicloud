@@ -7,7 +7,7 @@ on:
 
 jobs:
   ruby-ci:
-    runs-on: ubicloud
+    runs-on: ubicloud-standard-2-arm
 
     env:
       DB_USER: clover
