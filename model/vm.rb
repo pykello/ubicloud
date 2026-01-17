@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "jwt"
+require "shellwords"
 require_relative "../model"
 
 class Vm < Sequel::Model
@@ -223,6 +224,8 @@ class Vm < Sequel::Model
   end
 
   def init_health_monitor_session
+    return {} unless vm_host
+
     {
       ssh_session: vm_host.sshable.start_fresh_session
     }
@@ -230,7 +233,26 @@ class Vm < Sequel::Model
 
   def check_pulse(session:, previous_pulse:)
     reading = begin
-      session[:ssh_session].exec!("systemctl is-active :inhost_name :inhost_name-dnsmasq", inhost_name:).split("\n").all?("active") ? "up" : "down"
+      if session[:ssh_session]
+        units = []
+        unless sshable
+          units << inhost_name
+          units << "#{inhost_name}-dnsmasq"
+        end
+
+        vm_storage_volumes.each do |vol|
+          units << vol.vhost_backend_systemd_unit_name if vol.vhost_block_backend
+        end
+
+        if units.empty?
+          "up"
+        else
+          cmd = "systemctl is-active #{units.map(&:shellescape).join(" ")}".freeze
+          session[:ssh_session].exec!(cmd).split("\n").all?("active") ? "up" : "down"
+        end
+      else
+        "up"
+      end
     rescue
       "down"
     end

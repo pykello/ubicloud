@@ -43,7 +43,7 @@ else
   monitor_models = [
     VmHost,
     PostgresServer,
-    Vm.where(~Sshable.where(id: Sequel[:vm][:id]).exists),
+    Vm,
     MinioServer,
     GithubRunner.exclude(ready_at: nil),
     VmHostSlice,
