@@ -1,0 +1,36 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/stripe_server"
+require_relative "../lib/vm_path"
+
+unless (action = ARGV.shift)
+  puts "expected action as argument"
+  exit 1
+end
+
+params = JSON.parse($stdin.read)
+
+unless (stripe_server = params["stripe_server"])
+  puts "expected stripe_server in params"
+  exit 1
+end
+
+stripe_server = StripeServer.new(stripe_server)
+
+case action
+when "prep", "start"
+  unless (key_encryption_key = params["key_encryption_key"])
+    puts "expected key_encryption_key in params"
+    exit 1
+  end
+
+  stripe_server.prep(key_encryption_key) if action == "prep"
+  stripe_server.start(key_encryption_key) if action == "start"
+when "purge"
+  stripe_server.purge
+else
+  puts "Invalid action #{action}"
+  exit 1
+end
