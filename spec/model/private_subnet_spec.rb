@@ -29,7 +29,7 @@ RSpec.describe PrivateSubnet do
   describe "random ip generation" do
     it "returns random private ipv4" do
       private_subnet
-      expect(SecureRandom).to receive(:random_number).with(59).and_return(5)
+      expect(SecureRandom).to receive(:random_number).with(58).and_return(5)
       expect(private_subnet.random_private_ipv4.to_s).to eq "10.9.39.9/32"
     end
 
@@ -53,7 +53,7 @@ RSpec.describe PrivateSubnet do
       end
 
       it "returns random private ipv4" do
-        expect(SecureRandom).to receive(:random_number).with(59).and_return(1, 2)
+        expect(SecureRandom).to receive(:random_number).with(58).and_return(1, 2)
         expect(private_subnet.random_private_ipv4.to_s).to eq "10.9.39.6/32"
       end
 
@@ -380,6 +380,145 @@ RSpec.describe PrivateSubnet do
       tunnels = ps1_nic.src_ipsec_tunnels + ps1_nic.dst_ipsec_tunnels
       expect(IpsecTunnel.all.map(&:id).sort).to eq(tunnels.map(&:id).sort)
       expect(IpsecTunnel.count).to eq 2
+    end
+  end
+
+  describe "GCP cross-subnet firewall rules" do
+    let(:prj) { Project.create(name: "test-gcp-prj") }
+
+    let(:location) {
+      Location.create(name: "gcp-us-central1", provider: "gcp", project_id: prj.id,
+        display_name: "GCP US Central 1", ui_name: "GCP US Central 1", visible: true)
+    }
+
+    let(:credential) {
+      LocationCredential.create_with_id(location,
+        project_id: "test-gcp-project",
+        service_account_email: "test@test-gcp-project.iam.gserviceaccount.com",
+        credentials_json: "{}")
+    }
+
+    let(:ps1) {
+      credential
+      described_class.create(name: "gcp-ps1", location_id: location.id,
+        net6: "fd10:9b0b:6b4b:8fbb::/64", net4: "10.0.0.0/26",
+        state: "waiting", project_id: prj.id)
+    }
+
+    let(:ps2) {
+      credential
+      described_class.create(name: "gcp-ps2", location_id: location.id,
+        net6: "fd10:9b0b:6b4b:8fbc::/64", net4: "10.0.1.0/26",
+        state: "waiting", project_id: prj.id)
+    }
+
+    let(:firewalls_client) { instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client) }
+
+    before do
+      allow_any_instance_of(LocationCredential).to receive(:firewalls_client).and_return(firewalls_client)
+    end
+
+    describe "connect_subnet" do
+      it "creates ConnectedSubnet record and 4 firewall rules" do
+        allow(firewalls_client).to receive(:get).and_raise(Google::Cloud::NotFoundError.new("not found"))
+        allow(firewalls_client).to receive(:insert)
+
+        ps1.connect_subnet(ps2)
+
+        expect(ConnectedSubnet.where(
+          subnet_id_1: [ps1.id, ps2.id].min,
+          subnet_id_2: [ps1.id, ps2.id].max
+        ).count).to eq 1
+
+        expect(firewalls_client).to have_received(:get).exactly(4).times
+        expect(firewalls_client).to have_received(:insert).exactly(4).times
+      end
+
+      it "skips insert when firewall already exists" do
+        allow(firewalls_client).to receive(:get).and_return(instance_double(Google::Cloud::Compute::V1::Firewall))
+        allow(firewalls_client).to receive(:insert)
+
+        ps1.connect_subnet(ps2)
+
+        expect(firewalls_client).to have_received(:get).exactly(4).times
+        expect(firewalls_client).not_to have_received(:insert)
+      end
+    end
+
+    describe "disconnect_subnet" do
+      before do
+        # Create the ConnectedSubnet record directly
+        ConnectedSubnet.create(
+          subnet_id_1: [ps1.id, ps2.id].min,
+          subnet_id_2: [ps1.id, ps2.id].max
+        )
+      end
+
+      it "destroys ConnectedSubnet record and deletes 4 firewall rules" do
+        allow(firewalls_client).to receive(:delete)
+
+        ps1.disconnect_subnet(ps2)
+
+        expect(ConnectedSubnet.where(
+          subnet_id_1: [ps1.id, ps2.id].min,
+          subnet_id_2: [ps1.id, ps2.id].max
+        ).count).to eq 0
+
+        expect(firewalls_client).to have_received(:delete).exactly(4).times
+      end
+
+      it "handles NotFoundError gracefully on delete" do
+        allow(firewalls_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+        ps1.disconnect_subnet(ps2)
+
+        expect(ConnectedSubnet.where(
+          subnet_id_1: [ps1.id, ps2.id].min,
+          subnet_id_2: [ps1.id, ps2.id].max
+        ).count).to eq 0
+
+        expect(firewalls_client).to have_received(:delete).exactly(4).times
+      end
+    end
+
+    describe "cross_subnet_rule_name" do
+      it "generates correct format" do
+        name = ps1.send(:cross_subnet_rule_name, ps1, ps2, "egress")
+        expect(name).to eq "ubi-xsub-egress-#{ps1.ubid[0, 8]}-#{ps2.ubid[0, 8]}"
+      end
+    end
+
+    describe "create_cross_subnet_rules firewall attributes" do
+      it "creates egress rules with destination_ranges and ingress rules with source_ranges" do
+        allow(firewalls_client).to receive(:get).and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+        inserted_firewalls = []
+        allow(firewalls_client).to receive(:insert) do |project:, firewall_resource:|
+          inserted_firewalls << firewall_resource
+        end
+
+        ps1.send(:create_cross_subnet_rules, ps2)
+
+        vpc_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(prj)
+
+        egress_rules = inserted_firewalls.select { |fw| fw.direction == "EGRESS" }
+        ingress_rules = inserted_firewalls.select { |fw| fw.direction == "INGRESS" }
+
+        expect(egress_rules.length).to eq 2
+        expect(ingress_rules.length).to eq 2
+
+        egress_rules.each do |fw|
+          expect(fw.destination_ranges).not_to be_empty
+          expect(fw.priority).to eq 1000
+          expect(fw.network).to include(vpc_name)
+        end
+
+        ingress_rules.each do |fw|
+          expect(fw.source_ranges).not_to be_empty
+          expect(fw.priority).to eq 1000
+          expect(fw.network).to include(vpc_name)
+        end
+      end
     end
   end
 end
