@@ -60,6 +60,10 @@ def test_metal(options, test_cases)
     tests_to_wait << Prog::Test::UpgradePostgresResource.assemble
   end
 
+  if options[:test_cases].include?("postgres_firewall")
+    tests_to_wait << Prog::Test::PostgresFirewall.assemble
+  end
+
   if options[:test_cases].include?("kubernetes")
     tests_to_wait << Prog::Test::Kubernetes.assemble
   end
@@ -86,6 +90,10 @@ def test_aws(options, test_cases)
 
   if options[:test_cases].include?("postgres_standard")
     tests_to_wait << Prog::Test::PostgresResource.assemble(provider: "aws")
+  end
+
+  if options[:test_cases].include?("postgres_firewall")
+    tests_to_wait << Prog::Test::PostgresFirewall.assemble(provider: "aws")
   end
 
   tests_to_wait.each { |st| wait_until(st) }
@@ -120,6 +128,10 @@ def test_gcp(options, test_cases)
   end
   if options[:test_cases].include?("postgres_upgrade")
     tests_to_wait << Prog::Test::UpgradePostgresResource.assemble(provider: "gcp")
+  end
+
+  if options[:test_cases].include?("postgres_firewall")
+    tests_to_wait << Prog::Test::PostgresFirewall.assemble(provider: "gcp")
   end
 
   tests_to_wait.each { |st| wait_until(st) }

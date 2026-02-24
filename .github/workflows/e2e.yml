@@ -10,7 +10,7 @@ on:
       test_cases:
         description: 'Comma-separated list of test cases (vm)'
         required: true
-        default: 'vm,github_runner_ubuntu_2404,github_runner_ubuntu_2204,postgres_standard,postgres_standard_arm,postgres_ha,postgres_ha_arm,postgres_upgrade,kubernetes'
+        default: 'vm,github_runner_ubuntu_2404,github_runner_ubuntu_2204,postgres_standard,postgres_standard_arm,postgres_ha,postgres_ha_arm,postgres_upgrade,postgres_firewall,kubernetes'
         type: string
       providers:
         description: 'Comma-separated list of providers (metal,aws)'
