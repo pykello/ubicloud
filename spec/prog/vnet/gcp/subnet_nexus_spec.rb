@@ -31,11 +31,8 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
 
   before do
     nx.instance_variable_set(:@private_subnet, ps)
-    allow_any_instance_of(LocationCredential).to receive(:networks_client).and_return(networks_client)
-    allow_any_instance_of(LocationCredential).to receive(:subnetworks_client).and_return(subnetworks_client)
-    allow_any_instance_of(LocationCredential).to receive(:firewalls_client).and_return(firewalls_client)
-    allow_any_instance_of(LocationCredential).to receive(:global_operations_client).and_return(global_ops_client)
-    allow_any_instance_of(LocationCredential).to receive(:region_operations_client).and_return(region_ops_client)
+    allow(credential).to receive_messages(networks_client:, subnetworks_client:, firewalls_client:, global_operations_client: global_ops_client, region_operations_client: region_ops_client)
+    nx.instance_variable_set(:@credential, credential)
   end
 
   describe ".vpc_name" do

@@ -67,6 +67,8 @@ RSpec.describe PostgresServer do
   before do
     location_credential
     allow(Config).to receive(:postgres_service_project_id).and_return(project.id)
+    resource # force creation
+    allow(resource.location).to receive(:location_credential).and_return(location_credential)
   end
 
   context "with GCP provider" do
@@ -129,7 +131,7 @@ RSpec.describe PostgresServer do
         key = instance_double(Google::Apis::IamV1::ServiceAccountKey,
           private_key_data: '{"type":"service_account","private_key":"pk"}'.dup.force_encoding("ASCII-8BIT"))
 
-        allow_any_instance_of(LocationCredential).to receive_messages(iam_client:, storage_client:)
+        allow(location_credential).to receive_messages(iam_client:, storage_client:)
 
         expect(iam_client).to receive(:get_project_service_account).and_raise(
           Google::Apis::ClientError.new("Not Found")
@@ -181,7 +183,7 @@ RSpec.describe PostgresServer do
         key = instance_double(Google::Apis::IamV1::ServiceAccountKey,
           private_key_data: '{"type":"service_account","private_key":"pk"}'.dup.force_encoding("ASCII-8BIT"))
 
-        allow_any_instance_of(LocationCredential).to receive_messages(iam_client:, storage_client:)
+        allow(location_credential).to receive_messages(iam_client:, storage_client:)
 
         # SA already exists — get succeeds
         expect(iam_client).to receive(:get_project_service_account).and_return(sa)
@@ -223,7 +225,7 @@ RSpec.describe PostgresServer do
       }
 
       before do
-        allow_any_instance_of(LocationCredential).to receive_messages(iam_client:, storage_client:)
+        allow(location_credential).to receive_messages(iam_client:, storage_client:)
 
         bucket = instance_double(Google::Cloud::Storage::Bucket)
         policy = instance_double(Google::Cloud::Storage::PolicyV3)

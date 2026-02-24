@@ -4,7 +4,9 @@ require "google/cloud/compute/v1"
 
 RSpec.describe Prog::Vm::Gcp::Nexus do
   subject(:nx) {
-    described_class.new(st)
+    n = described_class.new(st)
+    n.instance_variable_set(:@credential, location_credential)
+    n
   }
 
   let(:st) {
@@ -49,9 +51,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
   end
 
   before do
-    allow_any_instance_of(LocationCredential).to receive(:compute_client).and_return(compute_client)
-    allow_any_instance_of(LocationCredential).to receive(:firewalls_client).and_return(fw_client)
-    allow_any_instance_of(LocationCredential).to receive(:zone_operations_client).and_return(zone_ops_client)
+    allow(location_credential).to receive_messages(compute_client:, firewalls_client: fw_client, zone_operations_client: zone_ops_client)
     allow(fw_client).to receive(:list).and_return([])
   end
 

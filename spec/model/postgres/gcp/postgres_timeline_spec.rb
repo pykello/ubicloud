@@ -192,7 +192,8 @@ PGDATA=/dat/17/data
         expect(file2).to receive(:delete)
         expect(bucket).to receive(:delete)
 
-        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        allow(postgres_timeline.location).to receive(:location_credential).and_return(location_credential)
+        allow(location_credential).to receive(:iam_client).and_return(iam_client)
         expect(iam_client).to receive(:delete_project_service_account).with(
           "projects/-/serviceAccounts/#{postgres_timeline.access_key}"
         )
@@ -206,7 +207,8 @@ PGDATA=/dat/17/data
         expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
         expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
 
-        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        allow(postgres_timeline.location).to receive(:location_credential).and_return(location_credential)
+        allow(location_credential).to receive(:iam_client).and_return(iam_client)
         expect(iam_client).to receive(:delete_project_service_account)
 
         postgres_timeline.destroy_blob_storage
@@ -218,7 +220,8 @@ PGDATA=/dat/17/data
         expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
         expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
 
-        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        allow(postgres_timeline.location).to receive(:location_credential).and_return(location_credential)
+        allow(location_credential).to receive(:iam_client).and_return(iam_client)
         expect(iam_client).to receive(:delete_project_service_account)
           .and_raise(Google::Apis::ClientError.new("Not Found"))
 
@@ -231,7 +234,8 @@ PGDATA=/dat/17/data
         expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
         expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
 
-        expect_any_instance_of(LocationCredential).not_to receive(:iam_client)
+        allow(postgres_timeline.location).to receive(:location_credential).and_return(location_credential)
+        expect(location_credential).not_to receive(:iam_client)
 
         postgres_timeline.destroy_blob_storage
       end

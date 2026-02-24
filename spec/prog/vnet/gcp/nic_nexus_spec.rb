@@ -42,8 +42,8 @@ RSpec.describe Prog::Vnet::Gcp::NicNexus do
 
   before do
     allow(nx).to receive(:nic).and_return(nic)
-    allow_any_instance_of(LocationCredential).to receive(:addresses_client).and_return(addresses_client)
-    allow_any_instance_of(LocationCredential).to receive(:region_operations_client).and_return(region_ops_client)
+    allow(location_credential).to receive_messages(addresses_client:, region_operations_client: region_ops_client)
+    nx.instance_variable_set(:@credential, location_credential)
   end
 
   describe "#start" do

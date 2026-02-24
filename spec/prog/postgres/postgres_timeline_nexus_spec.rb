@@ -491,6 +491,8 @@ RSpec.describe Prog::Postgres::PostgresTimelineNexus do
       it "deletes bucket contents and bucket then destroys timeline" do
         gcp_location = create_gcp_location
         postgres_timeline.update(location_id: gcp_location.id)
+        gcp_credential = gcp_location.location_credential
+        allow(gcp_credential).to receive(:iam_client).and_return(iam_service)
 
         file1 = instance_double(Google::Cloud::Storage::File)
         file2 = instance_double(Google::Cloud::Storage::File)
@@ -498,13 +500,13 @@ RSpec.describe Prog::Postgres::PostgresTimelineNexus do
         storage_client = instance_double(Google::Cloud::Storage::Project)
 
         expect(nx.postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        allow(nx.postgres_timeline.location).to receive(:location_credential).and_return(gcp_credential)
         expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(bucket)
         expect(bucket).to receive(:files).and_return([file1, file2])
         expect(file1).to receive(:delete)
         expect(file2).to receive(:delete)
         expect(bucket).to receive(:delete)
 
-        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_service)
         expect(iam_service).to receive(:delete_project_service_account).with(
           "projects/-/serviceAccounts/#{postgres_timeline.access_key}"
         )
@@ -516,12 +518,14 @@ RSpec.describe Prog::Postgres::PostgresTimelineNexus do
       it "handles missing bucket gracefully" do
         gcp_location = create_gcp_location
         postgres_timeline.update(location_id: gcp_location.id)
+        gcp_credential = gcp_location.location_credential
+        allow(gcp_credential).to receive(:iam_client).and_return(iam_service)
 
         storage_client = instance_double(Google::Cloud::Storage::Project)
         expect(nx.postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        allow(nx.postgres_timeline.location).to receive(:location_credential).and_return(gcp_credential)
         expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
 
-        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_service)
         allow(iam_service).to receive(:delete_project_service_account)
 
         expect { nx.destroy }.to exit({"msg" => "postgres timeline is deleted"})

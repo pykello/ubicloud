@@ -33,7 +33,9 @@ RSpec.describe PrivateSubnet do
 
   before do
     location_credential
-    allow_any_instance_of(LocationCredential).to receive(:firewalls_client).and_return(firewalls_client)
+    allow(location_credential).to receive(:firewalls_client).and_return(firewalls_client)
+    subnet1 # force creation so we can stub on the instance's location
+    allow(subnet1.location).to receive(:location_credential).and_return(location_credential)
   end
 
   context "with GCP provider" do

@@ -453,7 +453,9 @@ RSpec.describe PrivateSubnet do
     let(:firewalls_client) { instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client) }
 
     before do
-      allow_any_instance_of(LocationCredential).to receive(:firewalls_client).and_return(firewalls_client)
+      allow(credential).to receive(:firewalls_client).and_return(firewalls_client)
+      ps1 # force creation so we can stub on the instance's location
+      allow(ps1.location).to receive(:location_credential).and_return(credential)
     end
 
     describe "connect_subnet" do
