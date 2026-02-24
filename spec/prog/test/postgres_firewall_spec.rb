@@ -201,10 +201,13 @@ RSpec.describe Prog::Test::PostgresFirewall do
       fw.associate_with_private_subnet(private_subnet, apply_firewalls: false)
       fw.insert_firewall_rule("100.100.100.100/32", Sequel.pg_range(5432..5432))
       fw.insert_firewall_rule("100.100.100.100/32", Sequel.pg_range(6432..6432))
+      fw.insert_firewall_rule("1.2.3.4/32", Sequel.pg_range(5432..5432))
+      fw.insert_firewall_rule("1.2.3.4/32", Sequel.pg_range(6432..6432))
 
       allow(pg_fw_test.representative_server.vm).to receive(:ip4_string).and_return("1.2.3.4")
       expect(sshable).to receive(:_cmd).with("nc -zvw 5 1.2.3.4 5432")
       expect { pg_fw_test.wait_restricted_rules_applied }.to hop("test_restore_open_rules")
+      expect(frame_value(pg_fw_test, "fail_message")).to be_nil
     end
 
     it "sets fail_message when firewall CIDRs do not match expected" do

@@ -79,15 +79,22 @@ class Prog::Test::PostgresFirewall < Prog::Test::Base
 
   label def test_restricted_firewall_rules
     # Replace the customer firewall rules: only allow our runner's IP.
+    # Also allow the VM's own external IP since the test connects from
+    # within the VM to its external IP, which traverses the cloud firewall.
     uri = URI("https://api.ipify.org")
     my_ip = Net::HTTP.get(uri)
+    vm_ip = representative_server.vm.ip4_string
     update_stack({"runner_ip" => my_ip})
 
+    allowed_ips = [my_ip, vm_ip].compact.uniq
+    rules = allowed_ips.flat_map { |ip|
+      [
+        {cidr: "#{ip}/32", port_range: Sequel.pg_range(5432..5432)},
+        {cidr: "#{ip}/32", port_range: Sequel.pg_range(6432..6432)}
+      ]
+    }
     firewall = postgres_resource.customer_firewall
-    firewall.replace_firewall_rules([
-      {cidr: "#{my_ip}/32", port_range: Sequel.pg_range(5432..5432)},
-      {cidr: "#{my_ip}/32", port_range: Sequel.pg_range(6432..6432)}
-    ])
+    firewall.replace_firewall_rules(rules)
 
     hop_wait_restricted_rules_applied
   end
@@ -103,10 +110,10 @@ class Prog::Test::PostgresFirewall < Prog::Test::Base
     test_pg_connection(vm, should_succeed: true)
 
     # Verify the firewall rules on the resource match what we set.
-    rules = postgres_resource.pg_firewall_rules
+    fw_rules = postgres_resource.pg_firewall_rules
     runner_ip = frame["runner_ip"]
-    expected_cidrs = ["#{runner_ip}/32"]
-    actual_cidrs = rules.map { it.cidr.to_s }.uniq
+    expected_cidrs = [runner_ip, vm.ip4_string].compact.uniq.map { "#{it}/32" }
+    actual_cidrs = fw_rules.map { it.cidr.to_s }.uniq
     unless actual_cidrs.sort == expected_cidrs.sort
       update_stack({"fail_message" => "Expected firewall CIDRs #{expected_cidrs} but got #{actual_cidrs}"})
     end
