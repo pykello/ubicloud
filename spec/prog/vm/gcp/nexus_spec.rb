@@ -228,6 +228,47 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect(st.reload.stack.first["zone_retries"]).to eq(3)
     end
 
+    it "attaches persistent data disks for non-LSSD machine types" do
+      nic = vm.nics.first
+      nic.strand.update(label: "wait")
+      ensure_nic_gcp_resource(nic)
+
+      # VM is standard-2 (e2-standard-2), which is NOT LSSD.
+      # Add a data disk to confirm it gets attached.
+      VmStorageVolume.create(vm_id: vm.id, boot: false, size_gib: 100, disk_index: 1)
+
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-data-disk")
+      expect(compute_client).to receive(:insert) do |args|
+        disks = args[:instance_resource].disks
+        expect(disks.length).to eq(2)
+        expect(disks[0].boot).to be true
+        expect(disks[1].boot).to be false
+        expect(disks[1].initialize_params.disk_size_gb).to eq(100)
+        op
+      end
+
+      expect { nx.start }.to hop("wait_create_op")
+    end
+
+    it "does not attach persistent data disks for LSSD machine types" do
+      nic = vm.nics.first
+      nic.strand.update(label: "wait")
+      ensure_nic_gcp_resource(nic)
+
+      vm.update(family: "c4a-standard", vcpus: 8)
+      VmStorageVolume.create(vm_id: vm.id, boot: false, size_gib: 750, disk_index: 1)
+
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-lssd")
+      expect(compute_client).to receive(:insert) do |args|
+        disks = args[:instance_resource].disks
+        expect(disks.length).to eq(1) # Only boot disk, no persistent data disk
+        expect(disks[0].boot).to be true
+        op
+      end
+
+      expect { nx.start }.to hop("wait_create_op")
+    end
+
     it "hops to wait_create_op even when instance already exists" do
       nic = vm.nics.first
       nic.strand.update(label: "wait")
@@ -593,6 +634,46 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
       expect { nx.destroy }.to hop("wait_destroy_op")
     end
+
+    it "cleans up GCE firewall rules before deleting instance" do
+      fw1 = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
+      fw2 = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw6-testvm")
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([fw1])
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([fw2])
+      expect(fw_client).to receive(:delete).with(project: "test-gcp-project", firewall: "ubicloud-fw-testvm")
+      expect(fw_client).to receive(:delete).with(project: "test-gcp-project", firewall: "ubicloud-fw6-testvm")
+
+      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect { nx.destroy }.to hop("finalize_destroy")
+    end
+
+    it "handles firewall cleanup errors gracefully" do
+      expect(fw_client).to receive(:list).and_raise(Google::Cloud::Error.new("permission denied"))
+      expect(Clog).to receive(:emit).with("Failed to clean up GCE firewall rules")
+
+      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect { nx.destroy }.to hop("finalize_destroy")
+    end
+
+    it "handles already-deleted firewall rules during cleanup" do
+      fw = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([fw])
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([])
+      expect(fw_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("already deleted"))
+
+      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect { nx.destroy }.to hop("finalize_destroy")
+    end
+
+    it "skips firewall rules that don't start with expected prefix" do
+      other_fw = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-othervm")
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([other_fw])
+      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([])
+      expect(fw_client).not_to receive(:delete)
+
+      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect { nx.destroy }.to hop("finalize_destroy")
+    end
   end
 
   describe "#wait_destroy_op" do
@@ -619,6 +700,25 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
   describe "#finalize_destroy" do
     it "destroys the vm and pops" do
+      expect { nx.finalize_destroy }.to exit({"msg" => "vm destroyed"})
+    end
+
+    it "detaches NIC and increments destroy when NIC exists" do
+      nic = vm.nics.first
+      expect(nic.vm_id).to eq(vm.id)
+
+      expect { nx.finalize_destroy }.to exit({"msg" => "vm destroyed"})
+      expect(nic.reload.vm_id).to be_nil
+      expect(Semaphore.where(strand_id: nic.strand.id, name: "destroy").count).to eq(1)
+    end
+
+    it "skips NIC detach when NIC is nil" do
+      # Destroy NICs first so vm.nic returns nil
+      vm.nics.each { |n|
+        n.strand.destroy
+        n.destroy
+      }
+
       expect { nx.finalize_destroy }.to exit({"msg" => "vm destroyed"})
     end
   end
@@ -698,6 +798,12 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect(nx.send(:uses_local_ssd?)).to be false
     end
 
+    it "falls back to c3d-standard-360-lssd for standard family with very high vcpus" do
+      vm.update(vcpus: 500)
+      vm.reload
+      expect(nx.send(:gce_machine_type)).to eq("c3d-standard-360-lssd")
+    end
+
     it "maps ubuntu-noble to GCE ubuntu-2404-lts-amd64 family for x64" do
       expect(nx.send(:gce_source_image)).to eq("projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64")
     end
@@ -727,6 +833,11 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect { nx.send(:gce_source_image) }.to raise_error(RuntimeError, /Unknown boot image 'unknown-image'/)
     end
 
+    it "raises error for nil boot image" do
+      allow(nx.vm).to receive(:boot_image).and_return(nil)
+      expect { nx.send(:gce_source_image) }.to raise_error(RuntimeError, /Unknown boot image/)
+    end
+
     it "returns correct GCP zone defaulting to suffix a" do
       expect(nx.send(:gcp_zone)).to eq("hetzner-fsn1-a")
     end
@@ -746,6 +857,17 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       vm.nic.strand.modified!(:stack)
       vm.nic.strand.save_changes
       expect(nx.send(:gcp_zone)).to eq("hetzner-fsn1-b")
+    end
+
+    it "defaults to zone suffix 'a' when NIC is nil" do
+      # Destroy NICs so vm.nic returns nil
+      vm.nics.each { |n|
+        n.strand.destroy
+        n.destroy
+      }
+      nx.instance_variable_set(:@nic, nil)
+      nx.instance_variable_set(:@gcp_zone, nil)
+      expect(nx.send(:gcp_zone)).to eq("hetzner-fsn1-a")
     end
 
     it "returns the GCP region from location name" do

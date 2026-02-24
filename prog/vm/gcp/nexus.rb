@@ -109,7 +109,7 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
     )
 
     # Persist zone suffix in VM strand so it survives NIC destruction
-    zone_suffix = nic&.strand&.stack&.dig(0, "gcp_zone_suffix") || "a"
+    zone_suffix = nic.strand.stack.dig(0, "gcp_zone_suffix") || "a"
     strand.stack.first["gcp_zone_suffix"] = zone_suffix
     strand.modified!(:stack)
     strand.save_changes
@@ -312,7 +312,7 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
   def gcp_zone
     @gcp_zone ||= begin
       region = vm.location.name.delete_prefix("gcp-")
-      zone_suffix = strand.stack.dig(0, "gcp_zone_suffix") || nic&.strand&.stack&.dig(0, "gcp_zone_suffix") || "a"
+      zone_suffix = strand.stack.dig(0, "gcp_zone_suffix") || (nic && nic.strand.stack.dig(0, "gcp_zone_suffix")) || "a"
       "#{region}-#{zone_suffix}"
     end
   end

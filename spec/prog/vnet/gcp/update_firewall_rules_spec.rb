@@ -270,5 +270,67 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
+
+    it "falls back to update when insert raises AlreadyExistsError" do
+      rules = [
+        instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
+          port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
+      ]
+      expect(vm).to receive(:firewall_rules).and_return(rules)
+      expect(firewalls_client).to receive(:list).twice.and_return([])
+
+      expect(firewalls_client).to receive(:insert).and_raise(Google::Cloud::AlreadyExistsError.new("exists"))
+      expect(firewalls_client).to receive(:update)
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "skips update when existing rule matches desired state" do
+      rules = [
+        instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
+          port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
+      ]
+      expect(vm).to receive(:firewall_rules).and_return(rules)
+
+      existing = Google::Cloud::Compute::V1::Firewall.new(
+        name: "ubicloud-fw-testvm",
+        source_ranges: ["0.0.0.0/0"],
+        target_tags: ["testvm"],
+        allowed: [
+          Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "tcp", ports: ["5432"])
+        ]
+      )
+      expect(firewalls_client).to receive(:list).and_return([existing])
+      expect(firewalls_client).to receive(:list).and_return([])
+
+      expect(firewalls_client).not_to receive(:update)
+      expect(firewalls_client).not_to receive(:insert)
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "resolves vpc name from NIC private_subnet when available" do
+      # Clear memoized vpc name from previous test runs
+      nx.instance_variable_set(:@gcp_vpc_name, nil)
+      nic = instance_double(Nic)
+      ps = instance_double(PrivateSubnet, project: ubicloud_project)
+      allow(vm).to receive(:nics).and_return([nic])
+      allow(nic).to receive(:private_subnet).and_return(ps)
+
+      # Need at least one rule to trigger build_firewall_resource -> gcp_vpc_name
+      rules = [
+        instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
+          port_range: Sequel.pg_range(22..23), protocol: "tcp")
+      ]
+      expect(vm).to receive(:firewall_rules).and_return(rules)
+      expect(firewalls_client).to receive(:list).twice.and_return([])
+
+      expect(firewalls_client).to receive(:insert) do |args|
+        fw = args[:firewall_resource]
+        expect(fw.network).to include(vpc_name)
+      end
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
   end
 end

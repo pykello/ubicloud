@@ -126,10 +126,95 @@ RSpec.describe LocationCredential do
       expect(location_credential.subnetworks_client).to be(client)
     end
 
+    it "creates a firewalls client" do
+      client = instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client)
+      expect(Google::Cloud::Compute::V1::Firewalls::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
+        }
+      ).and_return(client)
+      expect(location_credential.firewalls_client).to be(client)
+    end
+
+    it "creates an addresses client" do
+      client = instance_double(Google::Cloud::Compute::V1::Addresses::Rest::Client)
+      expect(Google::Cloud::Compute::V1::Addresses::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::Compute::V1::Addresses::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
+        }
+      ).and_return(client)
+      expect(location_credential.addresses_client).to be(client)
+    end
+
+    it "creates a zone_operations client" do
+      client = instance_double(Google::Cloud::Compute::V1::ZoneOperations::Rest::Client)
+      expect(Google::Cloud::Compute::V1::ZoneOperations::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::Compute::V1::ZoneOperations::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
+        }
+      ).and_return(client)
+      expect(location_credential.zone_operations_client).to be(client)
+    end
+
+    it "creates a region_operations client" do
+      client = instance_double(Google::Cloud::Compute::V1::RegionOperations::Rest::Client)
+      expect(Google::Cloud::Compute::V1::RegionOperations::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::Compute::V1::RegionOperations::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
+        }
+      ).and_return(client)
+      expect(location_credential.region_operations_client).to be(client)
+    end
+
+    it "creates a global_operations client" do
+      client = instance_double(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client)
+      expect(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
+        }
+      ).and_return(client)
+      expect(location_credential.global_operations_client).to be(client)
+    end
+
     it "is associated with a location" do
       location_credential
       expect(location.location_credential).to eq(location_credential)
       expect(location_credential.location).to eq(location)
+    end
+  end
+
+  context "with AWS access key credentials" do
+    subject(:location_credential) {
+      described_class.create_with_id(location.id,
+        access_key: "AKIAIOSFODNN7EXAMPLE",
+        secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+    }
+
+    let(:location) {
+      Location.create(
+        name: "us-east-1",
+        display_name: "US East 1",
+        ui_name: "US East 1",
+        visible: true,
+        provider: "aws"
+      )
+    }
+
+    it "uses Aws::Credentials when access_key and secret_key are set" do
+      creds = location_credential.credentials
+      expect(creds).to be_a(Aws::Credentials)
+    end
+
+    it "returns an EC2 client" do
+      ec2 = instance_double(Aws::EC2::Client)
+      expect(Aws::EC2::Client).to receive(:new).and_return(ec2)
+      expect(location_credential.client).to be(ec2)
+    end
+
+    it "returns an AWS IAM client when credentials_json is not set" do
+      iam = instance_double(Aws::IAM::Client)
+      expect(Aws::IAM::Client).to receive(:new).and_return(iam)
+      expect(location_credential.iam_client).to be(iam)
     end
   end
 end

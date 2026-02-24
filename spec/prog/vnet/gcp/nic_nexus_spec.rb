@@ -164,6 +164,28 @@ RSpec.describe Prog::Vnet::Gcp::NicNexus do
 
       expect { nx.wait_allocate_ip }.to raise_error(RuntimeError, /static IP.*creation failed/)
     end
+
+    it "recovers if LRO errors but address was created" do
+      error_entry = Google::Cloud::Compute::V1::Errors.new(code: "TRANSIENT", message: "transient")
+      op = Google::Cloud::Compute::V1::Operation.new(
+        status: :DONE,
+        error: Google::Cloud::Compute::V1::Error.new(errors: [error_entry])
+      )
+      expect(region_ops_client).to receive(:get).and_return(op)
+
+      addr = Google::Cloud::Compute::V1::Address.new(address: "35.192.0.5")
+      # First get during error check succeeds (address exists)
+      expect(addresses_client).to receive(:get)
+        .with(project: "test-gcp-project", region: "us-central1", address: "ubicloud-#{nic.name}")
+        .and_return(addr)
+      # Second get for fetching address details
+      expect(addresses_client).to receive(:get)
+        .with(project: "test-gcp-project", region: "us-central1", address: "ubicloud-#{nic.name}")
+        .and_return(addr)
+
+      expect { nx.wait_allocate_ip }.to hop("wait")
+      expect(nic.nic_gcp_resource.reload.static_ip).to eq("35.192.0.5")
+    end
   end
 
   describe "#wait" do

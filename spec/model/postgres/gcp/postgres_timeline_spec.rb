@@ -176,5 +176,77 @@ PGDATA=/dat/17/data
         postgres_timeline.set_lifecycle_policy
       end
     end
+
+    describe "#destroy_blob_storage" do
+      it "deletes all files, bucket, and SA when access_key is set" do
+        storage_client = instance_double(Google::Cloud::Storage::Project)
+        iam_client = instance_double(Google::Apis::IamV1::IamService)
+        bucket = instance_double(Google::Cloud::Storage::Bucket)
+        expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(bucket)
+
+        file1 = instance_double(Google::Cloud::Storage::File)
+        file2 = instance_double(Google::Cloud::Storage::File)
+        expect(bucket).to receive(:files).and_return([file1, file2])
+        expect(file1).to receive(:delete)
+        expect(file2).to receive(:delete)
+        expect(bucket).to receive(:delete)
+
+        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        expect(iam_client).to receive(:delete_project_service_account).with(
+          "projects/-/serviceAccounts/#{postgres_timeline.access_key}"
+        )
+
+        postgres_timeline.destroy_blob_storage
+      end
+
+      it "handles missing bucket gracefully" do
+        storage_client = instance_double(Google::Cloud::Storage::Project)
+        iam_client = instance_double(Google::Apis::IamV1::IamService)
+        expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
+
+        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        expect(iam_client).to receive(:delete_project_service_account)
+
+        postgres_timeline.destroy_blob_storage
+      end
+
+      it "handles already-deleted SA gracefully" do
+        storage_client = instance_double(Google::Cloud::Storage::Project)
+        iam_client = instance_double(Google::Apis::IamV1::IamService)
+        expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
+
+        allow_any_instance_of(LocationCredential).to receive(:iam_client).and_return(iam_client)
+        expect(iam_client).to receive(:delete_project_service_account)
+          .and_raise(Google::Apis::ClientError.new("Not Found"))
+
+        expect { postgres_timeline.destroy_blob_storage }.not_to raise_error
+      end
+
+      it "skips SA deletion when access_key is nil" do
+        postgres_timeline.update(access_key: nil)
+        storage_client = instance_double(Google::Cloud::Storage::Project)
+        expect(postgres_timeline).to receive(:blob_storage_client).and_return(storage_client)
+        expect(storage_client).to receive(:bucket).with(postgres_timeline.ubid).and_return(nil)
+
+        expect_any_instance_of(LocationCredential).not_to receive(:iam_client)
+
+        postgres_timeline.destroy_blob_storage
+      end
+    end
+
+    describe "#setup_blob_storage" do
+      it "is a no-op for GCP" do
+        expect { postgres_timeline.setup_blob_storage }.not_to raise_error
+      end
+    end
+
+    describe "#generate_blob_storage_credentials?" do
+      it "returns false for GCP" do
+        expect(postgres_timeline.generate_blob_storage_credentials?).to be false
+      end
+    end
   end
 end

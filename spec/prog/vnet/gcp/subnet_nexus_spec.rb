@@ -343,11 +343,65 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
 
       expect { nx.wait_create_subnet }.to raise_error(RuntimeError, /subnet.*creation failed/)
     end
+
+    it "continues if LRO errors but subnet was created" do
+      error_entry = Google::Cloud::Compute::V1::Errors.new(code: "TRANSIENT", message: "transient error")
+      op = Google::Cloud::Compute::V1::Operation.new(
+        status: :DONE,
+        error: Google::Cloud::Compute::V1::Error.new(errors: [error_entry])
+      )
+      expect(region_ops_client).to receive(:get).and_return(op)
+      expect(subnetworks_client).to receive(:get)
+        .and_return(Google::Cloud::Compute::V1::Subnetwork.new(name: "ubicloud-#{ps.ubid}"))
+
+      expect { nx.wait_create_subnet }.to hop("create_subnet_allow_rules")
+    end
+  end
+
+  describe "#create_subnet_allow_rules" do
+    it "creates IPv4 and IPv6 egress allow rules for the subnet" do
+      # Both rules already exist
+      expect(firewalls_client).to receive(:get).twice
+        .and_return(Google::Cloud::Compute::V1::Firewall.new)
+      expect(firewalls_client).not_to receive(:insert)
+
+      expect { nx.create_subnet_allow_rules }.to hop("wait")
+    end
+
+    it "creates IPv4 and IPv6 allow rules when they don't exist" do
+      expect(firewalls_client).to receive(:get).twice
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
+      created_rules = []
+      expect(firewalls_client).to receive(:insert).twice do |args|
+        fw = args[:firewall_resource]
+        created_rules << {name: fw.name, direction: fw.direction, priority: fw.priority,
+                          target_tags: fw.target_tags.to_a}
+        op
+      end
+
+      expect { nx.create_subnet_allow_rules }.to hop("wait")
+
+      created_rules.each do |r|
+        expect(r[:direction]).to eq("EGRESS")
+        expect(r[:priority]).to eq(1000)
+        expect(r[:target_tags]).to eq(["ps-#{ps.ubid}"])
+      end
+    end
   end
 
   describe "#wait" do
     it "naps" do
       expect { nx.wait }.to nap(10 * 60)
+    end
+
+    it "clears refresh_keys semaphore when set" do
+      st_real = Strand.create_with_id(ps, prog: "Vnet::Gcp::SubnetNexus", label: "wait")
+      real_nx = described_class.new(st_real)
+      real_nx.incr_refresh_keys
+      expect { real_nx.wait }.to nap(10 * 60)
+      expect(Semaphore.where(strand_id: st_real.id, name: "refresh_keys").count).to eq(0)
     end
 
     it "propagates firewall updates to VMs" do
@@ -485,4 +539,88 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       nx.send(:maybe_delete_vpc)
     end
   end
+
+  describe "#verify_lro" do
+    it "does nothing when operation has no error? method" do
+      op = double("op") # rubocop:disable RSpec/VerifiedDoubles
+      expect { nx.send(:verify_lro, op, "test resource") {} }.not_to raise_error
+    end
+
+    it "does nothing when operation has no error" do
+      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
+      expect { nx.send(:verify_lro, op, "test resource") {} }.not_to raise_error
+    end
+
+    it "recovers when operation has error but resource exists" do
+      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "error msg")
+      expect(Clog).to receive(:emit)
+      nx.send(:verify_lro, op, "test resource") { "resource exists" }
+    end
+
+    it "raises when operation has error and resource does not exist" do
+      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "error msg")
+      expect {
+        nx.send(:verify_lro, op, "test resource") { raise Google::Cloud::NotFoundError.new("not found") }
+      }.to raise_error(RuntimeError, /GCP test resource creation failed/)
+    end
+  end
+
+  describe "#ensure_allow_rule" do
+    it "sets source_ranges when provided" do
+      expect(firewalls_client).to receive(:get)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
+      expect(firewalls_client).to receive(:insert) do |args|
+        fw = args[:firewall_resource]
+        expect(fw.source_ranges.to_a).to eq(["10.0.0.0/26"])
+        expect(fw.destination_ranges.to_a).to be_empty
+        op
+      end
+
+      nx.send(:ensure_allow_rule,
+        name: "test-ingress-rule",
+        direction: "INGRESS",
+        source_ranges: ["10.0.0.0/26"],
+        destination_ranges: nil,
+        allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")])
+    end
+
+    it "invokes recovery block when LRO has error" do
+      expect(firewalls_client).to receive(:get)
+        .with(hash_including(firewall: "test-allow-rule"))
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "transient error")
+      expect(firewalls_client).to receive(:insert).and_return(op)
+
+      # verify_lro will call the recovery block which calls firewalls_client.get again
+      expect(firewalls_client).to receive(:get)
+        .with(hash_including(firewall: "test-allow-rule"))
+        .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "test-allow-rule"))
+      expect(Clog).to receive(:emit)
+
+      nx.send(:ensure_allow_rule,
+        name: "test-allow-rule",
+        direction: "EGRESS",
+        source_ranges: nil,
+        destination_ranges: ["10.0.0.0/26"],
+        allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")])
+    end
+  end
+
+  # rubocop:disable RSpec/VerifiedDoubles
+  describe "#lro_error_message" do
+    it "returns string representation when error has no code method" do
+      op = double("op", error: "simple error")
+      expect(nx.send(:lro_error_message, op)).to eq("simple error")
+    end
+
+    it "returns formatted message with code when error has code" do
+      error = double("error", code: 500, message: "Internal error")
+      op = double("op", error:)
+      expect(nx.send(:lro_error_message, op)).to eq("Internal error (code: 500)")
+    end
+  end
+  # rubocop:enable RSpec/VerifiedDoubles
 end
