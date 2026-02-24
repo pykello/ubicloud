@@ -371,7 +371,7 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
     if retries >= 5
       raise "GCE instance creation failed after #{retries} zone retries: #{error_message}"
     end
-    Clog.emit("GCE zone capacity exhausted") { {zone_exhausted: {zone: gcp_zone, retries:, error: error_message}} }
+    Clog.emit("GCE zone capacity exhausted", {zone_exhausted: {zone: gcp_zone, retries:, error: error_message}})
     update_stack({"zone_retries" => retries})
     nap 30
   end
@@ -387,6 +387,6 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
       end
     end
   rescue Google::Cloud::Error => e
-    Clog.emit("Failed to clean up GCE firewall rules") { {gcp_firewall_cleanup_error: {vm_name: vm.name, error: e.message}} }
+    Clog.emit("Failed to clean up GCE firewall rules", {gcp_firewall_cleanup_error: {vm_name: vm.name, error: e.message}})
   end
 end

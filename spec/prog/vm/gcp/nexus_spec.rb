@@ -183,7 +183,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       nic.strand.update(label: "wait")
       ensure_nic_gcp_resource(nic)
       expect(compute_client).to receive(:insert).and_raise(Google::Cloud::ResourceExhaustedError.new("zone capacity"))
-      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted")
+      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted", anything)
 
       expect { nx.start }.to nap(30)
       expect(st.reload.stack.first["zone_retries"]).to eq(1)
@@ -194,7 +194,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       nic.strand.update(label: "wait")
       ensure_nic_gcp_resource(nic)
       expect(compute_client).to receive(:insert).and_raise(Google::Cloud::UnavailableError.new("service unavailable"))
-      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted")
+      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted", anything)
 
       expect { nx.start }.to nap(30)
       expect(st.reload.stack.first["zone_retries"]).to eq(1)
@@ -222,7 +222,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       st.save_changes
 
       expect(compute_client).to receive(:insert).and_raise(Google::Cloud::ResourceExhaustedError.new("zone capacity"))
-      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted")
+      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted", anything)
 
       expect { nx.start }.to nap(30)
       expect(st.reload.stack.first["zone_retries"]).to eq(3)
@@ -339,7 +339,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
         error: Google::Cloud::Compute::V1::Error.new(errors: [error_entry])
       )
       expect(zone_ops_client).to receive(:get).and_return(op)
-      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted")
+      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted", anything)
 
       expect { nx.wait_create_op }.to nap(30)
       expect(st.reload.stack.first["zone_retries"]).to eq(1)
@@ -358,7 +358,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
         error: Google::Cloud::Compute::V1::Error.new(errors: [error_entry])
       )
       expect(zone_ops_client).to receive(:get).and_return(op)
-      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted")
+      expect(Clog).to receive(:emit).with("GCE zone capacity exhausted", anything)
 
       expect { nx.wait_create_op }.to nap(30)
       expect(st.reload.stack.first["zone_retries"]).to eq(1)
@@ -649,7 +649,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
     it "handles firewall cleanup errors gracefully" do
       expect(fw_client).to receive(:list).and_raise(Google::Cloud::Error.new("permission denied"))
-      expect(Clog).to receive(:emit).with("Failed to clean up GCE firewall rules")
+      expect(Clog).to receive(:emit).with("Failed to clean up GCE firewall rules", anything)
 
       expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect { nx.destroy }.to hop("finalize_destroy")
