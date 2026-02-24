@@ -365,6 +365,11 @@ module AdminModelSpecHelper
       NicAwsResource.create_with_id(nic, network_interface_id: "eni-12345")
     end
 
+    def create_nic_gcp_resource
+      nic = create_nic
+      NicGcpResource.create_with_id(nic)
+    end
+
     def create_object_tag
       project = Project.create(name: "test-project")
       ObjectTag.create(project_id: project.id, name: "test-object-tag")
@@ -399,6 +404,10 @@ module AdminModelSpecHelper
 
     def create_pg_aws_ami
       PgAwsAmi.create(aws_ami_id: "ami-#{SecureRandom.hex(4)}", aws_location_name: "us-east-#{SecureRandom.hex(2)}", pg_version: "16", arch: "x64")
+    end
+
+    def create_pg_gce_image
+      PgGceImage.create(gcp_project_id: "test-project", gce_image_name: "postgres-ubuntu-2204-x64-test", pg_version: "16", arch: "x64")
     end
 
     def create_postgres_metric_destination
