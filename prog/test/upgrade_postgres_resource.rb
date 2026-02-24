@@ -217,7 +217,9 @@ class Prog::Test::UpgradePostgresResource < Prog::Test::Base
   end
 
   label def destroy_postgres
-    update_stack({"timeline_ids" => ((postgres_resource&.servers || []).map(&:timeline_id) + (read_replica&.servers || []).map(&:timeline_id)).uniq})
+    primary_timeline_ids = postgres_resource.servers.map(&:timeline_id)
+    replica_timeline_ids = read_replica ? read_replica.servers.map(&:timeline_id) : []
+    update_stack({"timeline_ids" => (primary_timeline_ids + replica_timeline_ids).uniq})
     read_replica&.incr_destroy
     postgres_resource.incr_destroy
     hop_wait_resources_destroyed
@@ -233,7 +235,7 @@ class Prog::Test::UpgradePostgresResource < Prog::Test::Base
     # Timelines are retained for 10 days after resource destruction for
     # customer recovery. Verify they still exist, then explicitly destroy
     # them to test timeline cleanup.
-    remaining_timelines = frame["timeline_ids"]&.filter_map { PostgresTimeline[it] } || []
+    remaining_timelines = (frame["timeline_ids"] || []).filter_map { PostgresTimeline[it] }
     if remaining_timelines.any?
       Clog.emit("Verifying timelines are retained after resource destroy (found #{remaining_timelines.count})")
       remaining_timelines.each(&:incr_destroy)

@@ -74,6 +74,19 @@ RSpec.describe Prog::Test::VmGroup do
       expect(LocationCredential[location.id].access_key).to eq("access_key")
     end
 
+    it "skips aws credential creation when credential already exists" do
+      allow(Aws::Credentials).to receive(:new).and_call_original
+      allow(Aws::EC2::Client).to receive(:new).and_return(Aws::EC2::Client.new(stub_responses: true))
+      aws_st = described_class.assemble(boot_images: ["ubuntu-noble"], provider: "aws")
+      location = Location[provider: "aws", project_id: nil, name: "us-west-2"]
+      LocationAwsAz.create(location_id: location.id, az: "a", zone_id: "usw2-az1")
+      LocationCredential.create_with_id(location.id, access_key: "existing_key", secret_key: "existing_secret")
+      aws_vg_test = described_class.new(aws_st)
+      expect(aws_vg_test).to receive(:update_stack).and_call_original
+      expect { aws_vg_test.setup_vms }.to hop("wait_vms")
+      expect(LocationCredential[location.id].access_key).to eq("existing_key")
+    end
+
     it "sets up gcp location" do
       expect(Config).to receive(:e2e_gcp_credentials_json).and_return("{}")
       expect(Config).to receive(:e2e_gcp_project_id).and_return("test-project")
@@ -82,6 +95,16 @@ RSpec.describe Prog::Test::VmGroup do
       gcp_vg_test = described_class.new(gcp_st)
       expect(gcp_vg_test).to receive(:update_stack).and_call_original
       expect { gcp_vg_test.setup_vms }.to hop("wait_vms")
+    end
+
+    it "skips gcp credential creation when credential already exists" do
+      location = Location[provider: "gcp", project_id: nil]
+      LocationCredential.create_with_id(location.id, credentials_json: "{}", project_id: "existing-project", service_account_email: "existing@test.iam.gserviceaccount.com")
+      gcp_st = described_class.assemble(boot_images: ["ubuntu-noble"], provider: "gcp")
+      gcp_vg_test = described_class.new(gcp_st)
+      expect(gcp_vg_test).to receive(:update_stack).and_call_original
+      expect { gcp_vg_test.setup_vms }.to hop("wait_vms")
+      expect(LocationCredential[location.id].project_id).to eq("existing-project")
     end
   end
 

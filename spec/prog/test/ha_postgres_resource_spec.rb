@@ -52,6 +52,18 @@ RSpec.describe Prog::Test::HaPostgresResource do
       expect(LocationCredential[location.id].access_key).to eq("access_key")
     end
 
+    it "skips creating aws credential if one already exists" do
+      allow(Aws::Credentials).to receive(:new).and_return(Aws::Credentials.new("existing-key", "existing-secret"))
+      allow(Aws::EC2::Client).to receive(:new).and_return(Aws::EC2::Client.new(stub_responses: true))
+      aws_strand = described_class.assemble(provider: "aws")
+      location = Location[provider: "aws", project_id: nil, name: "us-east-1"]
+      LocationAwsAz.create(location_id: location.id, az: "a", zone_id: "use1-az1")
+      LocationCredential.create_with_id(location.id, access_key: "existing-key", secret_key: "existing-secret")
+      aws_pgr_test = described_class.new(aws_strand)
+      expect { aws_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[location.id].access_key).to eq("existing-key")
+    end
+
     it "creates a postgres resource on gcp and hops to wait_postgres_resource" do
       gcp_location = Location[provider: "gcp", project_id: nil]
       unless LocationCredential[gcp_location.id]
@@ -67,6 +79,23 @@ RSpec.describe Prog::Test::HaPostgresResource do
       gcp_strand = described_class.assemble(provider: "gcp")
       gcp_pgr_test = described_class.new(gcp_strand)
       expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
+    end
+
+    it "creates LocationCredential on gcp when one does not pre-exist" do
+      expect(Config).to receive(:e2e_gcp_credentials_json).and_return("{}")
+      expect(Config).to receive(:e2e_gcp_project_id).and_return("test-gcp-project")
+      expect(Config).to receive(:e2e_gcp_service_account_email).and_return("test@test.iam.gserviceaccount.com")
+      PgGceImage.create_with_id(PgGceImage.generate_uuid,
+        gcp_project_id: "test-gcp-project",
+        gce_image_name: "postgres-ubuntu-2204-x64-20260218",
+        pg_version: "17", arch: "x64")
+      gcp_location = Location[provider: "gcp", project_id: nil]
+      # Ensure no credential exists
+      LocationCredential[gcp_location.id]&.destroy
+      gcp_strand = described_class.assemble(provider: "gcp")
+      gcp_pgr_test = described_class.new(gcp_strand)
+      expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[gcp_location.id]).not_to be_nil
     end
 
     it "creates a postgres resource on gcp with c4a-standard family and hops to wait_postgres_resource" do
@@ -239,6 +268,22 @@ RSpec.describe Prog::Test::HaPostgresResource do
     it "naps if the postgres resource isn't deleted yet" do
       pg_strand = Prog::Postgres::PostgresResourceNexus.assemble(project_id: pgr_test.frame["postgres_test_project_id"], location_id: Location::HETZNER_FSN1_ID, name: "test-pg", target_vm_size: "standard-2", target_storage_size_gib: 128, ha_type: "async")
       refresh_frame(pgr_test, new_values: {"postgres_resource_id" => pg_strand.id})
+      expect { pgr_test.wait_resources_destroyed }.to nap(5)
+    end
+
+    it "naps if private subnet still exists" do
+      refresh_frame(pgr_test, new_values: {"postgres_resource_id" => nil})
+      expect(PrivateSubnet).to receive(:[]).with(project_id: pgr_test.frame["postgres_test_project_id"]).and_return(instance_double(PrivateSubnet))
+      expect { pgr_test.wait_resources_destroyed }.to nap(5)
+    end
+
+    it "verifies timelines are retained and explicitly destroys them" do
+      timeline_id = SecureRandom.uuid
+      timeline = instance_double(PostgresTimeline)
+      refresh_frame(pgr_test, new_values: {"postgres_resource_id" => nil, "timeline_ids" => [timeline_id]})
+      expect(PrivateSubnet).to receive(:[]).with(project_id: pgr_test.frame["postgres_test_project_id"]).and_return(nil)
+      expect(PostgresTimeline).to receive(:[]).with(timeline_id).and_return(timeline)
+      expect(timeline).to receive(:incr_destroy)
       expect { pgr_test.wait_resources_destroyed }.to nap(5)
     end
 

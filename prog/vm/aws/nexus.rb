@@ -425,7 +425,7 @@ class Prog::Vm::Aws::Nexus < Prog::Base
   }.freeze
 
   def aws_ami_id
-    return vm.boot_image if vm.boot_image&.start_with?("ami-")
+    return vm.boot_image if vm.boot_image.start_with?("ami-")
 
     pattern = BOOT_IMAGE_NAMES[vm.boot_image]
     raise "Unknown boot image '#{vm.boot_image}' — expected an ami-* ID or one of: #{BOOT_IMAGE_NAMES.keys.join(", ")}" unless pattern

@@ -41,6 +41,68 @@ RSpec.describe Prog::Test::UpgradePostgresResource do
       expect(pg.ha_type).to eq("async")
       expect(frame_value(pgr_test, "location_id")).to eq(Location::HETZNER_FSN1_ID)
     end
+
+    it "creates a postgres resource on aws and hops to wait_postgres_resource" do
+      expect(Config).to receive(:e2e_aws_access_key).and_return("access_key")
+      expect(Config).to receive(:e2e_aws_secret_key).and_return("secret_key")
+      allow(Aws::Credentials).to receive(:new).and_return(Aws::Credentials.new("access_key", "secret_key"))
+      allow(Aws::EC2::Client).to receive(:new).and_return(Aws::EC2::Client.new(stub_responses: true))
+      aws_strand = described_class.assemble(provider: "aws")
+      location = Location[provider: "aws", project_id: nil, name: "us-west-2"]
+      LocationAwsAz.create(location_id: location.id, az: "a", zone_id: "usw2-az1")
+      aws_pgr_test = described_class.new(aws_strand)
+      expect { aws_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[location.id].access_key).to eq("access_key")
+      pr = PostgresResource[aws_pgr_test.strand.stack.first["postgres_resource_id"]]
+      expect(pr.target_vm_size).to eq(Option.aws_instance_type_name("m8gd", 2))
+      expect(pr.target_storage_size_gib).to eq(Option::AWS_STORAGE_SIZE_OPTIONS["m8gd"][2].first.to_i)
+    end
+
+    it "skips creating aws credential if one already exists" do
+      allow(Aws::Credentials).to receive(:new).and_return(Aws::Credentials.new("existing-key", "existing-secret"))
+      allow(Aws::EC2::Client).to receive(:new).and_return(Aws::EC2::Client.new(stub_responses: true))
+      aws_strand = described_class.assemble(provider: "aws")
+      location = Location[provider: "aws", project_id: nil, name: "us-west-2"]
+      LocationAwsAz.create(location_id: location.id, az: "a", zone_id: "usw2-az1")
+      LocationCredential.create_with_id(location.id, access_key: "existing-key", secret_key: "existing-secret")
+      aws_pgr_test = described_class.new(aws_strand)
+      expect { aws_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[location.id].access_key).to eq("existing-key")
+    end
+
+    it "creates a postgres resource on gcp without family and hops to wait_postgres_resource" do
+      expect(Config).to receive(:e2e_gcp_credentials_json).and_return("{}")
+      expect(Config).to receive(:e2e_gcp_project_id).and_return("test-gcp-project")
+      expect(Config).to receive(:e2e_gcp_service_account_email).and_return("test@test.iam.gserviceaccount.com")
+      PgGceImage.create_with_id(PgGceImage.generate_uuid,
+        gcp_project_id: "test-gcp-project",
+        gce_image_name: "postgres-ubuntu-2204-x64-20260218",
+        pg_version: "17", arch: "x64")
+      gcp_strand = described_class.assemble(provider: "gcp")
+      gcp_pgr_test = described_class.new(gcp_strand)
+      expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
+      pr = PostgresResource[gcp_pgr_test.strand.stack.first["postgres_resource_id"]]
+      expect(pr.target_vm_size).to eq("standard-2")
+      expect(pr.target_storage_size_gib).to eq(128)
+    end
+
+    it "creates a postgres resource on gcp with c4a-standard family and hops to wait_postgres_resource" do
+      gcp_location = Location[provider: "gcp", project_id: nil]
+      LocationCredential.create_with_id(gcp_location.id,
+        project_id: "test-gcp-project",
+        service_account_email: "test@test-gcp-project.iam.gserviceaccount.com",
+        credentials_json: "{}")
+      PgGceImage.create_with_id(PgGceImage.generate_uuid,
+        gcp_project_id: "test-gcp-project",
+        gce_image_name: "postgres-ubuntu-2204-arm64-20260224",
+        pg_version: "17", arch: "arm64")
+      gcp_strand = described_class.assemble(provider: "gcp", family: "c4a-standard")
+      gcp_pgr_test = described_class.new(gcp_strand)
+      expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
+      pr = PostgresResource[gcp_pgr_test.strand.stack.first["postgres_resource_id"]]
+      expect(pr.target_vm_size).to eq("c4a-standard-4")
+      expect(pr.target_storage_size_gib).to eq(375)
+    end
   end
 
   describe "#wait_postgres_resource" do
@@ -273,6 +335,13 @@ RSpec.describe Prog::Test::UpgradePostgresResource do
       expect { pgr_test.destroy_postgres }.to hop("wait_resources_destroyed")
       expect(@pg_strand.subject.destroy_set?).to be true
       expect(@replica_strand.subject.destroy_set?).to be true
+      expect(frame_value(pgr_test, "timeline_ids")).not_to be_empty
+    end
+
+    it "handles nil read_replica gracefully" do
+      refresh_frame(pgr_test, new_values: {"read_replica_id" => nil})
+      expect { pgr_test.destroy_postgres }.to hop("wait_resources_destroyed")
+      expect(@pg_strand.subject.destroy_set?).to be true
       expect(frame_value(pgr_test, "timeline_ids")).not_to be_empty
     end
   end

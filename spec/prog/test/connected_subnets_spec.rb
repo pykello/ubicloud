@@ -119,6 +119,12 @@ ExecStart=nc -l 8080 -6
   end
 
   describe "#perform_tests_private_ipv6" do
+    it "skips to perform_blocked_private_ipv4 on non-metal providers" do
+      vm = instance_double(Vm, location: instance_double(Location, provider: "gcp"))
+      expect(connected_subnets_test).to receive(:vm_to_be_connected).and_return(vm).at_least(:once)
+      expect { connected_subnets_test.perform_tests_private_ipv6 }.to hop("perform_blocked_private_ipv4")
+    end
+
     it "updates firewall rules, updates the stack, and naps" do
       vm = instance_double(Vm, location: instance_double(Location, provider: "metal"))
       expect(connected_subnets_test).to receive(:vm_to_be_connected).and_return(vm).at_least(:once)
@@ -173,6 +179,12 @@ ExecStart=nc -l 8080 -6
   end
 
   describe "#perform_blocked_private_ipv6" do
+    it "skips to finish on non-metal providers" do
+      vm = instance_double(Vm, location: instance_double(Location, provider: "gcp"))
+      expect(connected_subnets_test).to receive(:vm_to_be_connected).and_return(vm).at_least(:once)
+      expect { connected_subnets_test.perform_blocked_private_ipv6 }.to hop("finish")
+    end
+
     it "updates firewall rules, updates the stack, and naps" do
       vm = instance_double(Vm, location: instance_double(Location, provider: "metal"))
       expect(connected_subnets_test).to receive(:vm_to_be_connected).and_return(vm).at_least(:once)

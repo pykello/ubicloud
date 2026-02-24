@@ -82,6 +82,16 @@ RSpec.describe Prog::Test::PostgresResource do
       expect(LocationCredential[location.id].access_key).to eq("access_key")
     end
 
+    it "skips aws credential creation when credential already exists" do
+      aws_strand = described_class.assemble(provider: "aws")
+      aws_pgr_test = described_class.new(aws_strand)
+      location = Location[provider: "aws", project_id: nil, name: "us-west-2"]
+      LocationAwsAz.create(location_id: location.id, az: "a", zone_id: "usw2-az1")
+      LocationCredential.create_with_id(location.id, access_key: "existing_key", secret_key: "existing_secret")
+      expect { aws_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[location.id].access_key).to eq("existing_key")
+    end
+
     it "creates resource on gcp and hops to wait_postgres_resource" do
       expect(Config).to receive(:e2e_gcp_credentials_json).and_return("{}")
       expect(Config).to receive(:e2e_gcp_project_id).and_return("test-project")
@@ -95,6 +105,19 @@ RSpec.describe Prog::Test::PostgresResource do
       gcp_pgr_test = described_class.new(gcp_strand)
       expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
       expect(LocationCredential[gcp_location.id].credentials_json).to eq("{}")
+    end
+
+    it "skips gcp credential creation when credential already exists" do
+      location = Location[provider: "gcp", project_id: nil]
+      LocationCredential.create_with_id(location.id, credentials_json: "{}", project_id: "existing-project", service_account_email: "existing@test.iam.gserviceaccount.com")
+      PgGceImage.create_with_id(PgGceImage.generate_uuid,
+        gcp_project_id: "existing-project",
+        gce_image_name: "postgres-ubuntu-2204-x64-20260218",
+        pg_version: "17", arch: "x64")
+      gcp_strand = described_class.assemble(provider: "gcp")
+      gcp_pgr_test = described_class.new(gcp_strand)
+      expect { gcp_pgr_test.start }.to hop("wait_postgres_resource")
+      expect(LocationCredential[location.id].project_id).to eq("existing-project")
     end
 
     it "creates resource on gcp with c4a-standard family and hops to wait_postgres_resource" do
