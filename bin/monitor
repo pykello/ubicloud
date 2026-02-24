@@ -44,9 +44,13 @@ if Config.test?
   runner_args = {scan_every: 1, report_every: 1, enqueue_every: 1, check_stuck_pulses_every: 1}
 else
   runner_args = {ignore_threads: 2}
+  provisionable_postgres_servers = PostgresServer.exclude(vm_id: nil).where(
+    vm_id: Sshable.exclude(Sequel.like(:host, "temp_%")).select(:id)
+  )
+
   monitor_models = [
     VmHost,
-    PostgresServer,
+    provisionable_postgres_servers,
     Vm.exclude(vm_host_id: nil).exclude(unix_user: "runneradmin").eager(:vm_host, :sshable, :vm_storage_volumes),
     MinioServer,
     GithubRunner.exclude(ready_at: nil),
@@ -58,7 +62,7 @@ else
   ]
 
   metric_export_models = [
-    PostgresServer,
+    provisionable_postgres_servers,
     VmHost
   ]
 end
