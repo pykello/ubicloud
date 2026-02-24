@@ -159,13 +159,13 @@ RSpec.describe Prog::Test::PostgresResource do
 
     it "verifies ipv6 connectivity and hops to destroy_postgres" do
       allow(vm).to receive_messages(ip6: "2001:db8::1", ip6_string: "2001:db8::1")
-      expect(sshable).to receive(:cmd).and_return("1\n")
+      expect(sshable).to receive(:_cmd).and_return("1\n")
       expect { pgr_test.verify_ipv6_connectivity }.to hop("destroy_postgres")
     end
 
     it "sets fail_message if psql over ipv6 fails" do
       allow(vm).to receive_messages(ip6: "2001:db8::1", ip6_string: "2001:db8::1")
-      expect(sshable).to receive(:cmd).and_return("error\n")
+      expect(sshable).to receive(:_cmd).and_return("error\n")
       expect { pgr_test.verify_ipv6_connectivity }.to hop("destroy_postgres")
       expect(frame_value(pgr_test, "fail_message")).to eq("Failed to connect to PostgreSQL over IPv6")
     end

@@ -79,10 +79,10 @@ RSpec.describe PostgresServer do
     end
 
     describe "#refresh_walg_blob_storage_credentials" do
+      before { Sshable.create_with_id(vm.id) }
+
       it "writes SA key JSON to the server" do
-        sshable = instance_double(Sshable)
-        expect(postgres_server.vm).to receive(:sshable).and_return(sshable)
-        expect(sshable).to receive(:cmd).with(
+        expect(postgres_server.vm.sshable).to receive(:_cmd).with(
           "sudo -u postgres tee /etc/postgresql/gcs-sa-key.json > /dev/null",
           stdin: '{"type":"service_account","key":"data"}'
         )
@@ -104,6 +104,12 @@ RSpec.describe PostgresServer do
         expect(postgres_server.vm).to receive(:vm_storage_volumes).and_return([boot_vol, data_vol])
 
         expect(postgres_server.storage_device_paths).to eq(["/dev/vdb"])
+      end
+    end
+
+    describe "#lockout_mechanisms" do
+      it "returns pg_stop and hba" do
+        expect(postgres_server.lockout_mechanisms).to eq(["pg_stop", "hba"])
       end
     end
 
@@ -163,6 +169,42 @@ RSpec.describe PostgresServer do
         timeline.reload
         expect(timeline.access_key).to eq("pg-tl-abcd1234@test-project.iam.gserviceaccount.com")
         expect(timeline.secret_key).to eq('{"type":"service_account","private_key":"pk"}')
+      end
+
+      it "uses existing SA when get_project_service_account succeeds" do
+        timeline.update(access_key: nil, secret_key: nil)
+
+        sa_resource_name = "projects/test-project/serviceAccounts/pg-tl-abcd1234@test-project.iam.gserviceaccount.com"
+        sa = instance_double(Google::Apis::IamV1::ServiceAccount,
+          email: "pg-tl-abcd1234@test-project.iam.gserviceaccount.com",
+          name: sa_resource_name)
+        key = instance_double(Google::Apis::IamV1::ServiceAccountKey,
+          private_key_data: '{"type":"service_account","private_key":"pk"}'.dup.force_encoding("ASCII-8BIT"))
+
+        allow_any_instance_of(LocationCredential).to receive_messages(iam_client:, storage_client:)
+
+        # SA already exists — get succeeds
+        expect(iam_client).to receive(:get_project_service_account).and_return(sa)
+        expect(iam_client).not_to receive(:create_service_account)
+
+        expect(iam_client).to receive(:set_service_account_iam_policy)
+        expect(timeline).to receive(:create_bucket)
+
+        bucket = instance_double(Google::Cloud::Storage::Bucket)
+        policy = instance_double(Google::Cloud::Storage::PolicyV3)
+        bindings = instance_double(Google::Cloud::Storage::PolicyV3::Bindings)
+        expect(storage_client).to receive(:bucket).with(timeline.ubid).and_return(bucket)
+        expect(bucket).to receive(:policy).with(requested_policy_version: 3).and_return(policy)
+        expect(policy).to receive(:bindings).and_return(bindings)
+        expect(bindings).to receive(:insert)
+        expect(bucket).to receive(:policy=).with(policy)
+
+        expect(iam_client).to receive(:create_service_account_key).with(sa_resource_name).and_return(key)
+
+        postgres_server.attach_s3_policy_if_needed
+
+        timeline.reload
+        expect(timeline.access_key).to eq("pg-tl-abcd1234@test-project.iam.gserviceaccount.com")
       end
     end
 
