@@ -108,7 +108,7 @@ RSpec.describe Prog::Test::HaPostgresResource do
       end
       PgGceImage.create_with_id(PgGceImage.generate_uuid,
         gcp_project_id: "test-gcp-project",
-        gce_image_name: "postgres-ubuntu-2204-arm64-20260224",
+        gce_image_name: "postgres-ubuntu-2204-arm64-20260225",
         pg_version: "17", arch: "arm64")
       gcp_strand = described_class.assemble(provider: "gcp", family: "c4a-standard")
       gcp_pgr_test = described_class.new(gcp_strand)
