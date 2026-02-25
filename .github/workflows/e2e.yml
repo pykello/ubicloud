@@ -392,11 +392,8 @@ jobs:
           networks_client = Google::Cloud::Compute::V1::Networks::Rest::Client.new(&compute_config)
           subnetworks_client = Google::Cloud::Compute::V1::Subnetworks::Rest::Client.new(&compute_config)
           addresses_client = Google::Cloud::Compute::V1::Addresses::Rest::Client.new(&compute_config)
-          zones_client = Google::Cloud::Compute::V1::Zones::Rest::Client.new(&compute_config)
-          regions_client = Google::Cloud::Compute::V1::Regions::Rest::Client.new(&compute_config)
-
-          zones = zones_client.list(project: project_id).map(&:name)
-          regions = regions_client.list(project: project_id).map(&:name)
+          zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
+          regions = ["us-central1"]
 
           puts "=== Cleaning up GCP instances ==="
           zones.each do |zone|
