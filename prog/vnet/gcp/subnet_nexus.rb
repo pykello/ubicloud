@@ -220,30 +220,38 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
   end
 
   def ensure_firewall_policy
-    credential.network_firewall_policies_client.get(
-      project: gcp_project_id,
-      firewall_policy: firewall_policy_name
-    )
-  rescue Google::Cloud::NotFoundError
-    op = credential.network_firewall_policies_client.insert(
-      project: gcp_project_id,
-      firewall_policy_resource: Google::Cloud::Compute::V1::FirewallPolicy.new(
-        name: firewall_policy_name,
-        description: "Ubicloud network firewall policy for #{gcp_vpc_name}"
+    policy = begin
+      credential.network_firewall_policies_client.get(
+        project: gcp_project_id,
+        firewall_policy: firewall_policy_name
       )
-    )
-    wait_for_compute_global_op(op)
+    rescue Google::Cloud::NotFoundError
+      op = credential.network_firewall_policies_client.insert(
+        project: gcp_project_id,
+        firewall_policy_resource: Google::Cloud::Compute::V1::FirewallPolicy.new(
+          name: firewall_policy_name,
+          description: "Ubicloud network firewall policy for #{gcp_vpc_name}"
+        )
+      )
+      wait_for_compute_global_op(op)
+      nil
+    end
 
-    # Associate the policy with the VPC network
-    assoc_op = credential.network_firewall_policies_client.add_association(
-      project: gcp_project_id,
-      firewall_policy: firewall_policy_name,
-      firewall_policy_association_resource: Google::Cloud::Compute::V1::FirewallPolicyAssociation.new(
-        name: gcp_vpc_name,
-        attachment_target: "projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}"
+    # Ensure the policy is associated with the VPC network
+    vpc_target = "projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}"
+    unless policy&.associations&.any? { |a| a.attachment_target == vpc_target }
+      assoc_op = credential.network_firewall_policies_client.add_association(
+        project: gcp_project_id,
+        firewall_policy: firewall_policy_name,
+        firewall_policy_association_resource: Google::Cloud::Compute::V1::FirewallPolicyAssociation.new(
+          name: gcp_vpc_name,
+          attachment_target: vpc_target
+        )
       )
-    )
-    wait_for_compute_global_op(assoc_op)
+      wait_for_compute_global_op(assoc_op)
+    end
+  rescue Google::Cloud::AlreadyExistsError
+    # Association already exists (race condition with concurrent strands)
   end
 
   def ensure_policy_rule(priority:, direction:, action:, src_ip_ranges: nil, dest_ip_ranges: nil, layer4_configs: nil)

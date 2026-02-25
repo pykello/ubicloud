@@ -159,11 +159,44 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
     end
 
-    it "skips creation when firewall policy already exists" do
+    it "skips creation but ensures association when firewall policy already exists" do
+      vpc_target = "projects/test-gcp-project/global/networks/#{vpc_name}"
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name,
+          associations: [
+            Google::Cloud::Compute::V1::FirewallPolicyAssociation.new(
+              name: vpc_name, attachment_target: vpc_target
+            )
+          ])
+      )
+      expect(nfp_client).not_to receive(:insert)
+      expect(nfp_client).not_to receive(:add_association)
+
+      expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
+    end
+
+    it "creates association when firewall policy exists but has no association" do
       expect(nfp_client).to receive(:get).and_return(
         Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name)
       )
       expect(nfp_client).not_to receive(:insert)
+
+      assoc_op = instance_double(Gapic::GenericLRO::Operation, name: "op-assoc")
+      done_op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(nfp_client).to receive(:add_association).and_return(assoc_op)
+      expect(global_ops_client).to receive(:get).with(
+        project: "test-gcp-project", operation: "op-assoc"
+      ).and_return(done_op)
+
+      expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
+    end
+
+    it "handles AlreadyExistsError on association from concurrent strands" do
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name)
+      )
+      expect(nfp_client).to receive(:add_association)
+        .and_raise(Google::Cloud::AlreadyExistsError.new("association exists"))
 
       expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
     end
