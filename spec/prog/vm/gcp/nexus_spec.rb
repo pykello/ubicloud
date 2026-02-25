@@ -37,9 +37,9 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
   let(:compute_client) { instance_double(Google::Cloud::Compute::V1::Instances::Rest::Client) }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
-  let(:tag_bindings_client) { instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Client) }
+  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
+  let(:tag_bindings_client) { instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client) }
   let(:zone_ops_client) { instance_double(Google::Cloud::Compute::V1::ZoneOperations::Rest::Client) }
 
   def ensure_nic_gcp_resource(nic, **overrides)

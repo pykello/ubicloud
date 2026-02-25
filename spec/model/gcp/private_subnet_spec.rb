@@ -17,7 +17,7 @@ RSpec.describe PrivateSubnet do
       credentials_json: '{"type":"service_account","project_id":"test-project"}')
   }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
 
   let(:subnet1) {
     described_class.create(

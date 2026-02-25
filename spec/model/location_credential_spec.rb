@@ -147,36 +147,30 @@ RSpec.describe LocationCredential do
     end
 
     it "creates a tag_keys client" do
-      creds = instance_double(Google::Auth::ServiceAccountCredentials)
-      expect(Google::Auth::ServiceAccountCredentials).to receive(:make_creds).and_return(creds)
-      client = instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client)
-      expect(Google::Cloud::ResourceManager::V3::TagKeys::Client).to receive(:new).and_yield(
-        instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client::Configuration).tap {
-          expect(it).to receive(:credentials=).with(creds)
+      client = instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client)
+      expect(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
         }
       ).and_return(client)
       expect(location_credential.tag_keys_client).to be(client)
     end
 
     it "creates a tag_values client" do
-      creds = instance_double(Google::Auth::ServiceAccountCredentials)
-      expect(Google::Auth::ServiceAccountCredentials).to receive(:make_creds).and_return(creds)
-      client = instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client)
-      expect(Google::Cloud::ResourceManager::V3::TagValues::Client).to receive(:new).and_yield(
-        instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client::Configuration).tap {
-          expect(it).to receive(:credentials=).with(creds)
+      client = instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client)
+      expect(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
         }
       ).and_return(client)
       expect(location_credential.tag_values_client).to be(client)
     end
 
     it "creates a tag_bindings client" do
-      creds = instance_double(Google::Auth::ServiceAccountCredentials)
-      expect(Google::Auth::ServiceAccountCredentials).to receive(:make_creds).and_return(creds)
-      client = instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Client)
-      expect(Google::Cloud::ResourceManager::V3::TagBindings::Client).to receive(:new).and_yield(
-        instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Client::Configuration).tap {
-          expect(it).to receive(:credentials=).with(creds)
+      client = instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client)
+      expect(Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client).to receive(:new).and_yield(
+        instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client::Configuration).tap {
+          expect(it).to receive(:credentials=).with(location_credential.parsed_credentials)
         }
       ).and_return(client)
       expect(location_credential.tag_bindings_client).to be(client)

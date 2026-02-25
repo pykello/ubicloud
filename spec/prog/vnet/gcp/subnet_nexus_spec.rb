@@ -27,8 +27,8 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   let(:networks_client) { instance_double(Google::Cloud::Compute::V1::Networks::Rest::Client) }
   let(:subnetworks_client) { instance_double(Google::Cloud::Compute::V1::Subnetworks::Rest::Client) }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
+  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
   let(:global_ops_client) { instance_double(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client) }
   let(:region_ops_client) { instance_double(Google::Cloud::Compute::V1::RegionOperations::Rest::Client) }
 

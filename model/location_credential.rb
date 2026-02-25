@@ -77,20 +77,20 @@ class LocationCredential < Sequel::Model
   end
 
   def tag_keys_client
-    @tag_keys_client ||= Google::Cloud::ResourceManager::V3::TagKeys::Client.new do |config|
-      config.credentials = gcp_grpc_credentials
+    @tag_keys_client ||= Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client.new do |config|
+      config.credentials = parsed_credentials
     end
   end
 
   def tag_values_client
-    @tag_values_client ||= Google::Cloud::ResourceManager::V3::TagValues::Client.new do |config|
-      config.credentials = gcp_grpc_credentials
+    @tag_values_client ||= Google::Cloud::ResourceManager::V3::TagValues::Rest::Client.new do |config|
+      config.credentials = parsed_credentials
     end
   end
 
   def tag_bindings_client
-    @tag_bindings_client ||= Google::Cloud::ResourceManager::V3::TagBindings::Client.new do |config|
-      config.credentials = gcp_grpc_credentials
+    @tag_bindings_client ||= Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client.new do |config|
+      config.credentials = parsed_credentials
     end
   end
 
@@ -131,13 +131,6 @@ class LocationCredential < Sequel::Model
   end
 
   private
-
-  def gcp_grpc_credentials
-    @gcp_grpc_credentials ||= Google::Auth::ServiceAccountCredentials.make_creds(
-      json_key_io: StringIO.new(credentials_json),
-      scope: "https://www.googleapis.com/auth/cloud-platform"
-    )
-  end
 
   def gcp_iam_client
     @gcp_iam_client ||= begin

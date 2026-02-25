@@ -453,7 +453,7 @@ RSpec.describe PrivateSubnet do
     }
 
     let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-    let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
+    let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
     let(:tag_key_short) { Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(prj) }
 
     before do

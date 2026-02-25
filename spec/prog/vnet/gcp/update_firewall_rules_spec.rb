@@ -11,7 +11,7 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   let(:ubicloud_project) { instance_double(Project, ubid: "pjtest1234567890abcdef12") }
   let(:vpc_name) { "ubicloud-proj-#{ubicloud_project.ubid}" }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
   let(:credential) {
     instance_double(LocationCredential,
       network_firewall_policies_client: nfp_client,
