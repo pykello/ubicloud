@@ -6,6 +6,9 @@ require_relative "../lib/net_ssh"
 class Sshable < Sequel::Model
   prepend NetSsh::WarnUnsafe::Sshable
 
+  one_to_one :rhizome_installation, key: :id, read_only: true
+  plugin :association_dependencies, rhizome_installation: :destroy
+
   # We need to unrestrict primary key so Sshable.new(...).save_changes works
   # in sshable_spec.rb.
   unrestrict_primary_key
