@@ -47,7 +47,7 @@ jobs:
     name: E2E - ${{ matrix.provider }}
     runs-on: ubicloud-standard-4
     environment: E2E-${{ matrix.provider }}
-    timeout-minutes: 85
+    timeout-minutes: ${{ matrix.provider == 'gcp' && 20 || 85 }}
     concurrency: E2E-${{ matrix.provider }}
 
     steps:
@@ -59,6 +59,7 @@ jobs:
       with:
         public-ssh-key: |
           ${{ secrets.OPERATOR_SSH_PUBLIC_KEYS }}
+          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO2YqaaJlZ2+N1oa1Y8QIxW1ZCMHAfZv+HaMh1dqXnBe claude@ubicloud-e2e
         wait-minutes: 0
 
     - name: Set up Clover
@@ -163,7 +164,8 @@ jobs:
         OPERATOR_SSH_PUBLIC_KEYS: ${{ secrets.OPERATOR_SSH_PUBLIC_KEYS }}
       run: |
         set -o pipefail
-        timeout 83m foreman start -m all=1,respirate=2 | tee foreman.log | grep --line-buffered -F "e2e.1"
+        provider_timeout=${{ matrix.provider == 'gcp' && '18m' || '83m' }}
+        timeout $provider_timeout foreman start -m all=1,respirate=2 | tee foreman.log | grep --line-buffered -F "e2e.1"
 
     - name: Print logs
       if: always()
@@ -385,9 +387,9 @@ jobs:
           scope = ["https://www.googleapis.com/auth/cloud-platform"]
           authorizer = Google::Auth::ServiceAccountCredentials.make_creds(json_key_io: StringIO.new(creds_json), scope: scope)
 
-          # Compute clients
           compute_config = proc { |c| c.credentials = authorizer; c.quota_project = project_id }
           instances_client = Google::Cloud::Compute::V1::Instances::Rest::Client.new(&compute_config)
+          zone_ops_client = Google::Cloud::Compute::V1::ZoneOperations::Rest::Client.new(&compute_config)
           firewalls_client = Google::Cloud::Compute::V1::Firewalls::Rest::Client.new(&compute_config)
           nfp_client = Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client.new(&compute_config)
           networks_client = Google::Cloud::Compute::V1::Networks::Rest::Client.new(&compute_config)
@@ -397,40 +399,27 @@ jobs:
           zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
           regions = ["us-central1"]
 
-          puts "=== Cleaning up GCP instances ==="
+          # 1. Delete instances and collect delete operations
+          puts "=== Deleting GCP instances ==="
+          delete_ops = []
           zones.each do |zone|
             instances_client.list(project: project_id, zone: zone).each do |inst|
               puts "Deleting instance: #{inst.name} in #{zone}"
-              instances_client.delete(project: project_id, zone: zone, instance: inst.name) rescue puts "  Failed: #{$!.message}"
+              op = instances_client.delete(project: project_id, zone: zone, instance: inst.name) rescue nil
+              delete_ops << [op, zone] if op
             end
           end
 
-          puts "=== Cleaning up GCP network firewall policies ==="
-          nfp_client.list(project: project_id).select { |p| p.name&.start_with?("ubicloud-") }.each do |policy|
-            puts "Deleting network firewall policy: #{policy.name}"
-            nfp_client.delete(project: project_id, firewall_policy: policy.name) rescue puts "  Failed: #{$!.message}"
+          # 2. Wait for instance deletions to complete
+          delete_ops.each do |op, zone|
+            30.times do
+              result = zone_ops_client.get(project: project_id, zone: zone, operation: op.name)
+              break if result.status == :DONE
+              sleep 2
+            end rescue nil
           end
 
-          puts "=== Cleaning up GCP classic firewall rules (fallback) ==="
-          firewalls_client.list(project: project_id).select { |fw| fw.name.start_with?("ubicloud-") }.each do |fw|
-            puts "Deleting firewall rule: #{fw.name}"
-            firewalls_client.delete(project: project_id, firewall: fw.name) rescue puts "  Failed: #{$!.message}"
-          end
-
-          puts "=== Cleaning up GCP subnetworks ==="
-          regions.each do |region|
-            subnetworks_client.list(project: project_id, region: region).select { |s| s.name.start_with?("ubicloud-") }.each do |subnet|
-              puts "Deleting subnetwork: #{subnet.name} in #{region}"
-              subnetworks_client.delete(project: project_id, region: region, subnetwork: subnet.name) rescue puts "  Failed: #{$!.message}"
-            end
-          end
-
-          puts "=== Cleaning up GCP VPC networks ==="
-          networks_client.list(project: project_id).select { |n| n.name.start_with?("ubicloud-") }.each do |vpc|
-            puts "Deleting VPC network: #{vpc.name}"
-            networks_client.delete(project: project_id, network: vpc.name) rescue puts "  Failed: #{$!.message}"
-          end
-
+          # 3. Delete static addresses (may be held by deleted instances)
           puts "=== Cleaning up GCP static addresses ==="
           regions.each do |region|
             addresses_client.list(project: project_id, region: region).select { |a| a.name.start_with?("ubicloud-") }.each do |addr|
@@ -439,6 +428,41 @@ jobs:
             end
           end
 
+          # 4. Delete subnetworks (now safe since instances are gone)
+          puts "=== Cleaning up GCP subnetworks ==="
+          regions.each do |region|
+            subnetworks_client.list(project: project_id, region: region).select { |s| s.name.start_with?("ubicloud-") }.each do |subnet|
+              puts "Deleting subnetwork: #{subnet.name} in #{region}"
+              subnetworks_client.delete(project: project_id, region: region, subnetwork: subnet.name) rescue puts "  Failed: #{$!.message}"
+            end
+          end
+
+          # 5. Remove firewall policy associations, then delete policies
+          puts "=== Cleaning up GCP network firewall policies ==="
+          nfp_client.list(project: project_id).select { |p| p.name&.start_with?("ubicloud-") }.each do |policy|
+            (policy.associations || []).each do |assoc|
+              puts "Removing association: #{assoc.name} from policy #{policy.name}"
+              nfp_client.remove_association(project: project_id, firewall_policy: policy.name, name: assoc.name) rescue puts "  Failed: #{$!.message}"
+            end
+            puts "Deleting network firewall policy: #{policy.name}"
+            nfp_client.delete(project: project_id, firewall_policy: policy.name) rescue puts "  Failed: #{$!.message}"
+          end
+
+          # 6. Delete classic firewall rules (fallback)
+          puts "=== Cleaning up GCP classic firewall rules ==="
+          firewalls_client.list(project: project_id).select { |fw| fw.name.start_with?("ubicloud-") }.each do |fw|
+            puts "Deleting firewall rule: #{fw.name}"
+            firewalls_client.delete(project: project_id, firewall: fw.name) rescue puts "  Failed: #{$!.message}"
+          end
+
+          # 7. Delete VPC networks (now safe since subnets and policies are gone)
+          puts "=== Cleaning up GCP VPC networks ==="
+          networks_client.list(project: project_id).select { |n| n.name.start_with?("ubicloud-") }.each do |vpc|
+            puts "Deleting VPC network: #{vpc.name}"
+            networks_client.delete(project: project_id, network: vpc.name) rescue puts "  Failed: #{$!.message}"
+          end
+
+          # 8. Cleanup storage buckets
           puts "=== Cleaning up GCP storage buckets ==="
           storage = Google::Cloud::Storage.new(credentials: authorizer, project_id: project_id)
           storage.buckets.select { |b| b.name != "ubicloud-gce-images" }.each do |bucket|
@@ -447,6 +471,7 @@ jobs:
             bucket.delete rescue puts "  Failed: #{$!.message}"
           end
 
+          # 9. Cleanup service accounts
           puts "=== Cleaning up GCP service accounts ==="
           iam = Google::Apis::IamV1::IamService.new
           iam.authorization = authorizer
