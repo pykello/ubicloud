@@ -143,7 +143,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       firewall_policy: firewall_policy_name,
       priority:
     )
-  rescue Google::Cloud::NotFoundError
+  rescue Google::Cloud::NotFoundError, Google::Cloud::InvalidArgumentError
     # Already deleted
   end
 

@@ -203,6 +203,25 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
+    it "handles InvalidArgumentError when deleting stale rules" do
+      expect(vm).to receive(:firewall_rules).and_return([])
+
+      stale_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 12345,
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: [vm_dest_ip_range]
+        )
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [stale_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+
+      expect(nfp_client).to receive(:remove_rule).and_raise(Google::Cloud::InvalidArgumentError.new("does not contain a rule"))
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
     it "handles list errors gracefully" do
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),

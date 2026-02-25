@@ -252,7 +252,7 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
       firewall_policy: firewall_policy_name,
       priority:
     )
-  rescue Google::Cloud::NotFoundError
+  rescue Google::Cloud::NotFoundError, Google::Cloud::InvalidArgumentError
     matcher_attrs = {}
     matcher_attrs[:src_ip_ranges] = src_ip_ranges if src_ip_ranges
     matcher_attrs[:dest_ip_ranges] = dest_ip_ranges if dest_ip_ranges
@@ -291,10 +291,10 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
         firewall_policy: firewall_policy_name,
         priority:
       )
-    rescue Google::Cloud::NotFoundError
+    rescue Google::Cloud::NotFoundError, Google::Cloud::InvalidArgumentError
       # Already deleted
     end
-  rescue Google::Cloud::NotFoundError
+  rescue Google::Cloud::NotFoundError, Google::Cloud::InvalidArgumentError
     # Policy already deleted
   end
 

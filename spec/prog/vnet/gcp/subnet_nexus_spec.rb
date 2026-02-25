@@ -197,6 +197,18 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(directions.count("EGRESS")).to eq(2)
     end
 
+    it "creates deny rules when get_rule raises InvalidArgumentError" do
+      expect(nfp_client).to receive(:get_rule).exactly(4).times
+        .and_raise(Google::Cloud::InvalidArgumentError.new("does not contain a rule"))
+
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-rule")
+      done_op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(global_ops_client).to receive(:get).exactly(4).times.and_return(done_op)
+      expect(nfp_client).to receive(:add_rule).exactly(4).times.and_return(op)
+
+      expect { nx.create_vpc_deny_rules }.to hop("create_subnet")
+    end
+
     it "skips creation when deny rules already exist" do
       rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
       expect(nfp_client).to receive(:get_rule).exactly(4).times.and_return(rule)
@@ -435,6 +447,19 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       # Both priority rules not found (inner rescue catches each one)
       expect(nfp_client).to receive(:remove_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      expect(subnetworks_client).to receive(:delete)
+      expect(ps).to receive(:destroy)
+      expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
+    end
+
+    it "handles InvalidArgumentError during rule cleanup" do
+      expect(ps).to receive(:nics).and_return([]).at_least(:once)
+      expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
+      expect(ps).to receive(:remove_all_firewalls)
+
+      expect(nfp_client).to receive(:remove_rule).twice
+        .and_raise(Google::Cloud::InvalidArgumentError.new("does not contain a rule"))
 
       expect(subnetworks_client).to receive(:delete)
       expect(ps).to receive(:destroy)
