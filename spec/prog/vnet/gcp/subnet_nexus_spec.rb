@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 
 RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   subject(:nx) { described_class.new(st) }
@@ -23,12 +22,10 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
     PrivateSubnet.create(name: "ps", location_id: location.id, net6: "fd10:9b0b:6b4b:8fbb::/64",
       net4: "10.0.0.0/26", state: "waiting", project_id: project.id)
   }
-  let(:vpc_name) { "ubicloud-proj-#{project.ubid}" }
+  let(:vpc_name) { "ubicloud-gcp-us-central1" }
   let(:networks_client) { instance_double(Google::Cloud::Compute::V1::Networks::Rest::Client) }
   let(:subnetworks_client) { instance_double(Google::Cloud::Compute::V1::Subnetworks::Rest::Client) }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
   let(:global_ops_client) { instance_double(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client) }
   let(:region_ops_client) { instance_double(Google::Cloud::Compute::V1::RegionOperations::Rest::Client) }
 
@@ -37,7 +34,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
     allow(credential).to receive_messages(
       networks_client:, subnetworks_client:,
       network_firewall_policies_client: nfp_client,
-      tag_keys_client:, tag_values_client:,
       global_operations_client: global_ops_client,
       region_operations_client: region_ops_client
     )
@@ -45,14 +41,8 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   end
 
   describe ".vpc_name" do
-    it "returns ubicloud-proj-<ubid> for a project" do
-      expect(described_class.vpc_name(project)).to eq(vpc_name)
-    end
-  end
-
-  describe ".tag_key_short_name" do
-    it "returns same as vpc_name" do
-      expect(described_class.tag_key_short_name(project)).to eq(vpc_name)
+    it "returns ubicloud-<location_name> for a location" do
+      expect(described_class.vpc_name(location)).to eq(vpc_name)
     end
   end
 
@@ -138,7 +128,7 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   end
 
   describe "#create_firewall_policy" do
-    it "creates firewall policy if not exists and hops to create_tag_key" do
+    it "creates firewall policy if not exists and hops to create_vpc_deny_rules" do
       expect(nfp_client).to receive(:get)
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
@@ -166,7 +156,7 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         project: "test-gcp-project", operation: "op-assoc"
       ).and_return(done_op)
 
-      expect { nx.create_firewall_policy }.to hop("create_tag_key")
+      expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
     end
 
     it "skips creation when firewall policy already exists" do
@@ -175,96 +165,11 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       )
       expect(nfp_client).not_to receive(:insert)
 
-      expect { nx.create_firewall_policy }.to hop("create_tag_key")
-    end
-  end
-
-  describe "#create_tag_key" do
-    let(:tag_key) {
-      Google::Cloud::ResourceManager::V3::TagKey.new(
-        name: "tagKeys/123456",
-        short_name: vpc_name
-      )
-    }
-    let(:tag_value) {
-      Google::Cloud::ResourceManager::V3::TagValue.new(
-        name: "tagValues/789",
-        short_name: "vm"
-      )
-    }
-
-    it "creates tag key and vm tag value when they don't exist" do
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .with(name: "test-gcp-project/#{vpc_name}")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
-      expect(tag_keys_client).to receive(:create_tag_key) do |args|
-        expect(args[:tag_key].short_name).to eq(vpc_name)
-        expect(args[:tag_key].purpose).to eq(:GCE_FIREWALL)
-        expect(args[:tag_key].purpose_data["network"]).to include(vpc_name)
-        lro
-      end
-
-      # ensure_tag_value("vm") — tag key exists now, value doesn't
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .with(name: "test-gcp-project/#{vpc_name}")
-        .and_return(tag_key)
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/vm")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      expect(tag_values_client).to receive(:create_tag_value) do |args|
-        expect(args[:tag_value].parent).to eq("tagKeys/123456")
-        expect(args[:tag_value].short_name).to eq("vm")
-        lro
-      end
-
-      expect { nx.create_tag_key }.to hop("create_vpc_deny_rules")
-    end
-
-    it "skips creation when tag key and value already exist" do
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .with(name: "test-gcp-project/#{vpc_name}")
-        .and_return(tag_key)
-
-      # ensure_tag_value("vm")
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .with(name: "test-gcp-project/#{vpc_name}")
-        .and_return(tag_key)
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/vm")
-        .and_return(tag_value)
-
-      expect(tag_keys_client).not_to receive(:create_tag_key)
-      expect(tag_values_client).not_to receive(:create_tag_value)
-
-      expect { nx.create_tag_key }.to hop("create_vpc_deny_rules")
-    end
-
-    it "raises when tag key creation fails" do
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      error_result = double("error", message: "quota exceeded") # rubocop:disable RSpec/VerifiedDoubles
-      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: true, error: error_result)
-      expect(tag_keys_client).to receive(:create_tag_key).and_return(lro)
-
-      expect { nx.create_tag_key }.to raise_error(RuntimeError, /Tag key creation failed/)
+      expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
     end
   end
 
   describe "#create_vpc_deny_rules" do
-    let(:vm_tag_value) {
-      Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/789", short_name: "vm")
-    }
-
-    before do
-      allow(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/vm")
-        .and_return(vm_tag_value)
-    end
-
     it "creates 4 deny rules when they don't exist" do
       expect(nfp_client).to receive(:get_rule).exactly(4).times
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
@@ -279,8 +184,7 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         created_rules << {
           priority: rule.priority,
           direction: rule.direction,
-          action: rule.action,
-          target_tags: rule.target_secure_tags.map(&:name)
+          action: rule.action
         }
         op
       end
@@ -288,7 +192,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect { nx.create_vpc_deny_rules }.to hop("create_subnet")
 
       expect(created_rules.map { |r| r[:action] }).to all(eq("deny"))
-      expect(created_rules.map { |r| r[:target_tags] }).to all(eq(["tagValues/789"]))
       directions = created_rules.map { |r| r[:direction] }
       expect(directions.count("INGRESS")).to eq(2)
       expect(directions.count("EGRESS")).to eq(2)
@@ -386,37 +289,7 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   end
 
   describe "#create_subnet_allow_rules" do
-    let(:subnet_tag_value) {
-      Google::Cloud::ResourceManager::V3::TagValue.new(
-        name: "tagValues/456",
-        short_name: "ps-#{ps.ubid}"
-      )
-    }
-    let(:tag_key) {
-      Google::Cloud::ResourceManager::V3::TagKey.new(
-        name: "tagKeys/123456",
-        short_name: vpc_name
-      )
-    }
-
-    before do
-      # ensure_tag_value for subnet tag
-      allow(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .with(name: "test-gcp-project/#{vpc_name}")
-        .and_return(tag_key)
-    end
-
-    it "creates subnet tag value and IPv4+IPv6 egress allow rules" do
-      # ensure_tag_value — tag value exists
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
-        .and_return(subnet_tag_value)
-
-      # resolve_tag_value_name
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
-        .and_return(subnet_tag_value)
-
+    it "creates IPv4+IPv6 egress allow rules with IP-based matching" do
       # Two policy rules (IPv4 egress + IPv6 egress), both new
       expect(nfp_client).to receive(:get_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
@@ -431,7 +304,8 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         created_rules << {
           direction: rule.direction,
           action: rule.action,
-          target_tags: rule.target_secure_tags.map(&:name)
+          src_ip_ranges: rule.match.src_ip_ranges.to_a,
+          dest_ip_ranges: rule.match.dest_ip_ranges.to_a
         }
         op
       end
@@ -439,39 +313,16 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect { nx.create_subnet_allow_rules }.to hop("wait")
 
       expect(created_rules).to all(include(direction: "EGRESS", action: "allow"))
-      expect(created_rules.map { |r| r[:target_tags] }).to all(eq(["tagValues/456"]))
+      created_rules.each do |r|
+        expect(r[:src_ip_ranges]).not_to be_empty
+        expect(r[:dest_ip_ranges]).not_to be_empty
+      end
     end
 
     it "skips creation when rules already exist" do
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
-        .and_return(subnet_tag_value)
-        .at_least(:once)
-
       rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
       expect(nfp_client).to receive(:get_rule).twice.and_return(rule)
       expect(nfp_client).not_to receive(:add_rule)
-
-      expect { nx.create_subnet_allow_rules }.to hop("wait")
-    end
-
-    it "creates tag value when it doesn't exist" do
-      # First call: tag_key exists, tag_value doesn't
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
-      expect(tag_values_client).to receive(:create_tag_value).and_return(lro)
-
-      # resolve_tag_value_name
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
-        .and_return(subnet_tag_value)
-
-      # Rules already exist
-      rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
-      expect(nfp_client).to receive(:get_rule).twice.and_return(rule)
 
       expect { nx.create_subnet_allow_rules }.to hop("wait")
     end
@@ -508,12 +359,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
 
-      # delete_subnet_tag_value
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .and_return(Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/456"))
-      lro = instance_double(Gapic::Operation, wait_until_done!: nil)
-      expect(tag_values_client).to receive(:delete_tag_value).and_return(lro)
-
       # delete_subnet_policy_rules
       expect(nfp_client).to receive(:remove_rule).twice
 
@@ -524,7 +369,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         subnetwork: "ubicloud-#{ps.ubid}"
       )
 
-      expect(nx).to receive(:maybe_delete_vpc)
       expect(ps).to receive(:destroy)
       expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
     end
@@ -534,16 +378,11 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
 
-      # delete_subnet_tag_value — already deleted
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
       # delete_subnet_policy_rules — already deleted
       expect(nfp_client).to receive(:remove_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
       expect(subnetworks_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect(nx).to receive(:maybe_delete_vpc)
       expect(ps).to receive(:destroy)
       expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
     end
@@ -553,8 +392,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
 
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect(nfp_client).to receive(:remove_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
@@ -569,8 +406,6 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
 
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect(nfp_client).to receive(:remove_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
@@ -597,76 +432,13 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
 
-      expect(tag_values_client).to receive(:get_namespaced_tag_value)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
       # Both priority rules not found (inner rescue catches each one)
       expect(nfp_client).to receive(:remove_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
       expect(subnetworks_client).to receive(:delete)
-      expect(nx).to receive(:maybe_delete_vpc)
       expect(ps).to receive(:destroy)
       expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
-    end
-  end
-
-  describe "#maybe_delete_vpc" do
-    let(:ps_dataset) {
-      dataset = instance_double(Sequel::Dataset)
-      allow(project).to receive(:private_subnets_dataset).and_return(dataset)
-      allow(dataset).to receive_messages(where: dataset)
-      dataset
-    }
-
-    before do
-      allow(ps).to receive(:project).and_return(project)
-    end
-
-    it "deletes firewall policy, tag key, and VPC when no other GCP subnets remain" do
-      allow(ps_dataset).to receive(:count).and_return(0)
-
-      # delete_firewall_policy
-      expect(nfp_client).to receive(:delete)
-        .with(project: "test-gcp-project", firewall_policy: vpc_name)
-
-      # delete_tag_key
-      tag_key = Google::Cloud::ResourceManager::V3::TagKey.new(name: "tagKeys/123")
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key).and_return(tag_key)
-      vm_tv = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/789")
-      expect(tag_values_client).to receive(:list_tag_values).and_return([vm_tv])
-      lro = instance_double(Gapic::Operation, wait_until_done!: nil)
-      expect(tag_values_client).to receive(:delete_tag_value).with(name: "tagValues/789").and_return(lro)
-      expect(tag_keys_client).to receive(:delete_tag_key).with(name: "tagKeys/123").and_return(lro)
-
-      # delete_vpc_network
-      expect(networks_client).to receive(:delete)
-        .with(project: "test-gcp-project", network: vpc_name)
-
-      nx.send(:maybe_delete_vpc)
-    end
-
-    it "does not delete VPC when other GCP subnets remain in project" do
-      allow(ps_dataset).to receive(:count).and_return(1)
-
-      expect(nfp_client).not_to receive(:delete)
-      expect(tag_keys_client).not_to receive(:delete_tag_key)
-      expect(networks_client).not_to receive(:delete)
-
-      nx.send(:maybe_delete_vpc)
-    end
-
-    it "handles already-deleted resources gracefully" do
-      allow(ps_dataset).to receive(:count).and_return(0)
-
-      expect(nfp_client).to receive(:delete)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect(networks_client).to receive(:delete)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      nx.send(:maybe_delete_vpc)
     end
   end
 

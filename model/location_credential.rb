@@ -4,7 +4,6 @@ require_relative "../model"
 require "aws-sdk-ec2"
 require "aws-sdk-iam"
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 require "google/cloud/storage"
 require "google/apis/iam_v1"
 require "googleauth"
@@ -72,24 +71,6 @@ class LocationCredential < Sequel::Model
 
   def network_firewall_policies_client
     @network_firewall_policies_client ||= Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client.new do |config|
-      config.credentials = parsed_credentials
-    end
-  end
-
-  def tag_keys_client
-    @tag_keys_client ||= Google::Cloud::ResourceManager::V3::TagKeys::Rest::Client.new do |config|
-      config.credentials = parsed_credentials
-    end
-  end
-
-  def tag_values_client
-    @tag_values_client ||= Google::Cloud::ResourceManager::V3::TagValues::Rest::Client.new do |config|
-      config.credentials = parsed_credentials
-    end
-  end
-
-  def tag_bindings_client
-    @tag_bindings_client ||= Google::Cloud::ResourceManager::V3::TagBindings::Rest::Client.new do |config|
       config.credentials = parsed_credentials
     end
   end

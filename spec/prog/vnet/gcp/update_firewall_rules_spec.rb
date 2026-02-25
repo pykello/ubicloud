@@ -1,36 +1,30 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 
 RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   subject(:nx) { described_class.new(st) }
 
   let(:st) { Strand.new }
   let(:vm) { instance_double(Vm, name: "testvm") }
-  let(:ubicloud_project) { instance_double(Project, ubid: "pjtest1234567890abcdef12") }
-  let(:vpc_name) { "ubicloud-proj-#{ubicloud_project.ubid}" }
+  let(:location) { instance_double(Location, name: "us-central1", location_credential: credential) }
+  let(:vpc_name) { "ubicloud-us-central1" }
   let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
   let(:credential) {
     instance_double(LocationCredential,
       network_firewall_policies_client: nfp_client,
-      tag_values_client:,
       project_id: "test-gcp-project")
   }
-  let(:location) { instance_double(Location, location_credential: credential) }
-  let(:vm_tag_value) {
-    Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/999", short_name: "fwvm-testvm")
-  }
+  let(:vm_dest_ip_range) { "10.0.0.1/32" }
 
   before do
     nx.instance_variable_set(:@vm, vm)
-    allow(vm).to receive_messages(location:, project: ubicloud_project, nics: [])
-
-    # Default: resolve vm tag value
-    allow(tag_values_client).to receive(:get_namespaced_tag_value)
-      .with(name: "test-gcp-project/#{vpc_name}/fwvm-testvm")
-      .and_return(vm_tag_value)
+    nic = instance_double(Nic)
+    private_ipv4 = instance_double(NetAddr::IPv4Net)
+    network = instance_double(NetAddr::IPv4, to_s: "10.0.0.1")
+    allow(private_ipv4).to receive(:network).and_return(network)
+    allow(nic).to receive(:private_ipv4).and_return(private_ipv4)
+    allow(vm).to receive_messages(location:, nics: [nic])
   end
 
   describe "#before_run" do
@@ -72,10 +66,10 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
         expect(rule.direction).to eq("INGRESS")
         expect(rule.action).to eq("allow")
         expect(rule.match.src_ip_ranges).to eq(["0.0.0.0/0"])
+        expect(rule.match.dest_ip_ranges).to eq([vm_dest_ip_range])
         expect(rule.match.layer4_configs.size).to eq(1)
         expect(rule.match.layer4_configs.first.ip_protocol).to eq("tcp")
         expect(rule.match.layer4_configs.first.ports).to eq(["5432"])
-        expect(rule.target_secure_tags.first.name).to eq("tagValues/999")
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
@@ -111,6 +105,7 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect(nfp_client).to receive(:add_rule) do |args|
         rule = args[:firewall_policy_rule_resource]
         expect(rule.match.src_ip_ranges).to eq(["::/0"])
+        expect(rule.match.dest_ip_ranges).to eq([vm_dest_ip_range])
         expect(rule.match.layer4_configs.first.ip_protocol).to eq("tcp")
         expect(rule.match.layer4_configs.first.ports).to eq(["5432"])
       end
@@ -152,9 +147,9 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
         action: "allow",
         match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
           src_ip_ranges: ["10.0.0.0/8"],
+          dest_ip_ranges: [vm_dest_ip_range],
           layer4_configs: [Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(ip_protocol: "tcp", ports: ["22"])]
-        ),
-        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+        )
       )
       policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [existing_rule])
       expect(nfp_client).to receive(:get).and_return(policy)
@@ -171,7 +166,11 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
 
       stale_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
         priority: 12345,
-        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: [vm_dest_ip_range]
+        )
       )
       policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [stale_rule])
       expect(nfp_client).to receive(:get).and_return(policy)
@@ -190,7 +189,11 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
 
       stale_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
         priority: 12345,
-        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: [vm_dest_ip_range]
+        )
       )
       policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [stale_rule])
       expect(nfp_client).to receive(:get).and_return(policy)
@@ -311,14 +314,14 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
         action: "allow",
         match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
           src_ip_ranges: ["0.0.0.0/0"],
+          dest_ip_ranges: [vm_dest_ip_range],
           layer4_configs: [
             Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(
               ip_protocol: "tcp",
               ports: ["5432"]
             )
           ]
-        ),
-        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+        )
       )
       policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [existing_rule])
       expect(nfp_client).to receive(:get).and_return(policy)
@@ -329,14 +332,8 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "resolves vpc name from NIC private_subnet when available" do
+    it "resolves vpc name from vm location" do
       nx.instance_variable_set(:@firewall_policy_name, nil)
-      nx.instance_variable_set(:@tag_key_short_name, nil)
-      nx.instance_variable_set(:@vm_tag_value_name, nil)
-      nic = instance_double(Nic)
-      ps = instance_double(PrivateSubnet, project: ubicloud_project)
-      allow(vm).to receive(:nics).and_return([nic])
-      allow(nic).to receive(:private_subnet).and_return(ps)
 
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
@@ -348,7 +345,7 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       )
 
       expect(nfp_client).to receive(:add_rule) do |args|
-        expect(args[:firewall_policy]).to eq(vpc_name)
+        expect(args[:firewall_policy]).to eq("ubicloud-us-central1")
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
@@ -359,7 +356,11 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
 
       other_vm_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
         priority: 50000,
-        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/888")]
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: ["10.0.0.99/32"]
+        )
       )
       policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [other_vm_rule])
       expect(nfp_client).to receive(:get).and_return(policy)

@@ -199,10 +199,6 @@ GEM
       base64 (~> 0.2)
       faraday (>= 1.0, < 3.a)
     google-cloud-errors (1.5.0)
-    google-cloud-resource_manager-v3 (1.5.1)
-      gapic-common (~> 1.2)
-      google-cloud-errors (~> 1.0)
-      grpc-google-iam-v1 (~> 1.11)
     google-cloud-storage (1.58.0)
       addressable (~> 2.8)
       digest-crc (~> 0.4)
@@ -269,10 +265,6 @@ GEM
     grpc (1.78.0-x86_64-linux-musl)
       google-protobuf (>= 3.25, < 5.0)
       googleapis-common-protos-types (~> 1.0)
-    grpc-google-iam-v1 (1.11.0)
-      google-protobuf (>= 3.18, < 5.a)
-      googleapis-common-protos (~> 1.7.0)
-      grpc (~> 1.41)
     hashdiff (1.2.1)
     hashery (2.1.2)
     hashie (5.0.0)
@@ -606,7 +598,6 @@ DEPENDENCIES
   forme
   google-apis-iam_v1
   google-cloud-compute-v1 (~> 3.4)
-  google-cloud-resource_manager-v3 (~> 1.5)
   google-cloud-storage (~> 1.58)
   jwt
   mail

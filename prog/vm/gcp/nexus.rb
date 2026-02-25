@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 require_relative "../../../lib/gcp_lro"
 
 class Prog::Vm::Gcp::Nexus < Prog::Base
@@ -179,11 +178,6 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
 
     vm.update(cores: vm.vcpus / 2, allocated_at: Time.now, ephemeral_net6: public_ipv6)
 
-    hop_bind_tags
-  end
-
-  label def bind_tags
-    bind_secure_tags
     hop_wait_sshable
   end
 
@@ -262,8 +256,8 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
 
     vm.update(display_state: "deleting")
 
-    # Clean up per-VM firewall policy rules and tag resources
-    cleanup_vm_firewall_resources
+    # Clean up per-VM firewall policy rules
+    cleanup_vm_policy_rules
 
     begin
       op = compute_client.delete(
@@ -382,107 +376,11 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
     nap 30
   end
 
-  # --- Secure tag binding ---
-
-  def tag_key_short_name
-    @tag_key_short_name ||= begin
-      ps = nic&.private_subnet
-      project = ps ? ps.project : vm.project
-      Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(project)
-    end
-  end
-
-  def instance_resource_name
-    "//compute.googleapis.com/projects/#{gcp_project_id}/zones/#{gcp_zone}/instances/#{vm.name}"
-  end
-
-  def bind_secure_tags
-    gcp_res = nic&.nic_gcp_resource
-    tag_values_to_bind = ["vm"]
-    tag_values_to_bind << gcp_res.subnet_tag if gcp_res
-
-    # Ensure a per-VM tag value exists for firewall rules
-    ensure_vm_tag_value
-    tag_values_to_bind << vm_tag_value_short_name
-
-    tag_values_to_bind.each do |short_name|
-      tag_value_name = resolve_tag_value_name(short_name)
-      bind_tag_to_instance(tag_value_name)
-    end
-  rescue Google::Cloud::Error => e
-    Clog.emit("Failed to bind secure tags", {gcp_tag_binding_error: {vm_name: vm.name, error: e.message}})
-  end
-
-  def ensure_vm_tag_value
-    credential.tag_values_client.get_namespaced_tag_value(
-      name: "#{gcp_project_id}/#{tag_key_short_name}/#{vm_tag_value_short_name}"
-    )
-  rescue Google::Cloud::NotFoundError
-    tag_key = credential.tag_keys_client.get_namespaced_tag_key(
-      name: "#{gcp_project_id}/#{tag_key_short_name}"
-    )
-    op = credential.tag_values_client.create_tag_value(
-      tag_value: Google::Cloud::ResourceManager::V3::TagValue.new(
-        parent: tag_key.name,
-        short_name: vm_tag_value_short_name,
-        description: "Ubicloud per-VM tag: #{vm.name}"
-      )
-    )
-    op.wait_until_done!
-    raise "Tag value creation failed: #{op.error.message}" if op.error?
-  end
-
-  def vm_tag_value_short_name
-    "fwvm-#{vm.name}"
-  end
-
-  def resolve_tag_value_name(short_name)
-    tv = credential.tag_values_client.get_namespaced_tag_value(
-      name: "#{gcp_project_id}/#{tag_key_short_name}/#{short_name}"
-    )
-    tv.name
-  end
-
-  def bind_tag_to_instance(tag_value_name)
-    # Check if already bound
-    existing = credential.tag_bindings_client.list_tag_bindings(parent: instance_resource_name)
-    return if existing.any? { |b| b.tag_value == tag_value_name }
-
-    op = credential.tag_bindings_client.create_tag_binding(
-      tag_binding: Google::Cloud::ResourceManager::V3::TagBinding.new(
-        parent: instance_resource_name,
-        tag_value: tag_value_name
-      )
-    )
-    op.wait_until_done!
-    raise "Tag binding failed: #{op.error.message}" if op.error?
-  rescue Google::Cloud::AlreadyExistsError
-    # Already bound
-  end
-
   # --- Cleanup ---
 
-  def cleanup_vm_firewall_resources
-    # Remove per-VM firewall policy rules
-    cleanup_vm_policy_rules
-
-    # Remove tag bindings from the instance
-    cleanup_tag_bindings
-
-    # Delete the per-VM tag value
-    delete_vm_tag_value
-  rescue Google::Cloud::Error => e
-    Clog.emit("Failed to clean up GCE firewall resources", {gcp_firewall_cleanup_error: {vm_name: vm.name, error: e.message}})
-  end
-
   def cleanup_vm_policy_rules
-    policy_name = begin
-      ps = nic&.private_subnet
-      project = ps ? ps.project : vm.project
-      Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
-    end
+    policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(vm.location)
 
-    # List all rules in the policy and remove ones targeting this VM's tag
     begin
       policy = credential.network_firewall_policies_client.get(
         project: gcp_project_id,
@@ -492,17 +390,14 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
       return # Policy already deleted
     end
 
-    vm_tag_short = vm_tag_value_short_name
-    begin
-      vm_tv = credential.tag_values_client.get_namespaced_tag_value(
-        name: "#{gcp_project_id}/#{tag_key_short_name}/#{vm_tag_short}"
-      )
-    rescue Google::Cloud::NotFoundError
-      return # Tag value already deleted, no rules to clean up
-    end
+    vm_ip = nic&.private_ipv4&.network&.to_s
+    return unless vm_ip
+
+    vm_dest = "#{vm_ip}/32"
 
     (policy.rules || []).each do |rule|
-      next unless rule.target_secure_tags&.any? { |t| t.name == vm_tv.name }
+      next unless rule.direction == "INGRESS" && rule.action == "allow"
+      next unless rule.match&.dest_ip_ranges&.include?(vm_dest)
       credential.network_firewall_policies_client.remove_rule(
         project: gcp_project_id,
         firewall_policy: policy_name,
@@ -511,27 +406,7 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
     rescue Google::Cloud::NotFoundError
       # Already deleted
     end
-  end
-
-  def cleanup_tag_bindings
-    bindings = credential.tag_bindings_client.list_tag_bindings(parent: instance_resource_name)
-    bindings.each do |binding|
-      op = credential.tag_bindings_client.delete_tag_binding(name: binding.name)
-      op.wait_until_done!
-    rescue Google::Cloud::NotFoundError
-      # Already deleted
-    end
-  rescue Google::Cloud::NotFoundError
-    # Instance already deleted
-  end
-
-  def delete_vm_tag_value
-    tv = credential.tag_values_client.get_namespaced_tag_value(
-      name: "#{gcp_project_id}/#{tag_key_short_name}/#{vm_tag_value_short_name}"
-    )
-    op = credential.tag_values_client.delete_tag_value(name: tv.name)
-    op.wait_until_done!
-  rescue Google::Cloud::NotFoundError
-    # Already deleted
+  rescue Google::Cloud::Error => e
+    Clog.emit("Failed to clean up GCE firewall resources", {gcp_firewall_cleanup_error: {vm_name: vm.name, error: e.message}})
   end
 end

@@ -51,9 +51,8 @@ RSpec.describe Prog::Vnet::Gcp::NicNexus do
       expect { nx.start }.to hop("allocate_static_ip")
       gcp_res = NicGcpResource[nic.id]
       expect(gcp_res).not_to be_nil
-      expect(gcp_res.network_name).to eq("ubicloud-proj-#{project.ubid}")
+      expect(gcp_res.network_name).to eq("ubicloud-gcp-us-central1")
       expect(gcp_res.subnet_name).to eq("ubicloud-#{private_subnet.ubid}")
-      expect(gcp_res.subnet_tag).to eq("ps-#{private_subnet.ubid}")
       expect(st.reload.stack.first["gcp_zone_suffix"]).to match(/\A[abc]\z/)
     end
 

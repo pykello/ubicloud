@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 require_relative "spec_helper"
 
 RSpec.describe PrivateSubnet do
@@ -453,13 +452,10 @@ RSpec.describe PrivateSubnet do
     }
 
     let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
-    let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Rest::Client) }
-    let(:tag_key_short) { Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(prj) }
 
     before do
       allow(credential).to receive_messages(
-        network_firewall_policies_client: nfp_client,
-        tag_values_client:
+        network_firewall_policies_client: nfp_client
       )
       ps1 # force creation so we can stub on the instance's location
       allow(ps1.location).to receive(:location_credential).and_return(credential)
@@ -467,16 +463,6 @@ RSpec.describe PrivateSubnet do
 
     describe "connect_subnet" do
       it "creates ConnectedSubnet record and 4 policy rules" do
-        tv1 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/100")
-        tv2 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/200")
-
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps1.ubid}")
-          .and_return(tv1)
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps2.ubid}")
-          .and_return(tv2)
-
         expect(nfp_client).to receive(:get_rule).exactly(4).times
           .and_raise(Google::Cloud::NotFoundError.new("not found"))
         expect(nfp_client).to receive(:add_rule).exactly(4).times
@@ -490,16 +476,6 @@ RSpec.describe PrivateSubnet do
       end
 
       it "skips add_rule when rule already exists" do
-        tv1 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/100")
-        tv2 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/200")
-
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps1.ubid}")
-          .and_return(tv1)
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps2.ubid}")
-          .and_return(tv2)
-
         expect(nfp_client).to receive(:get_rule).exactly(4).times
           .and_return(Google::Cloud::Compute::V1::FirewallPolicyRule.new)
         expect(nfp_client).not_to receive(:add_rule)
@@ -549,17 +525,7 @@ RSpec.describe PrivateSubnet do
     end
 
     describe "create_cross_subnet_rules firewall attributes" do
-      it "creates egress rules with dest_ip_ranges and ingress rules with src_ip_ranges" do
-        tv1 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/100")
-        tv2 = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/200")
-
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps1.ubid}")
-          .and_return(tv1)
-        expect(tag_values_client).to receive(:get_namespaced_tag_value)
-          .with(name: "test-gcp-project/#{tag_key_short}/ps-#{ps2.ubid}")
-          .and_return(tv2)
-
+      it "creates egress rules with src and dest IP ranges, and ingress rules with src and dest IP ranges" do
         created_rules = []
         expect(nfp_client).to receive(:get_rule).exactly(4).times
           .and_raise(Google::Cloud::NotFoundError.new("not found"))
@@ -567,7 +533,6 @@ RSpec.describe PrivateSubnet do
           rule = args[:firewall_policy_rule_resource]
           created_rules << {
             direction: rule.direction,
-            target_tags: rule.target_secure_tags.map(&:name),
             src_ip_ranges: rule.match.src_ip_ranges.to_a,
             dest_ip_ranges: rule.match.dest_ip_ranges.to_a
           }
@@ -581,12 +546,16 @@ RSpec.describe PrivateSubnet do
         expect(egress_rules.length).to eq 2
         expect(ingress_rules.length).to eq 2
 
+        # Egress rules have src (local subnet) and dest (remote subnet) IP ranges
         egress_rules.each do |r|
+          expect(r[:src_ip_ranges]).not_to be_empty
           expect(r[:dest_ip_ranges]).not_to be_empty
         end
 
+        # Ingress rules have src (remote subnet) and dest (local subnet) IP ranges
         ingress_rules.each do |r|
           expect(r[:src_ip_ranges]).not_to be_empty
+          expect(r[:dest_ip_ranges]).not_to be_empty
         end
       end
     end

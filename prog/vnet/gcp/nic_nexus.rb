@@ -21,12 +21,10 @@ class Prog::Vnet::Gcp::NicNexus < Prog::Base
     strand.save_changes
 
     ps = nic.private_subnet
-    project = ps.project
     NicGcpResource.create_with_id(
       nic.id,
-      network_name: Prog::Vnet::Gcp::SubnetNexus.vpc_name(project),
-      subnet_name: "ubicloud-#{ps.ubid}",
-      subnet_tag: "ps-#{ps.ubid}"
+      network_name: Prog::Vnet::Gcp::SubnetNexus.vpc_name(ps.location),
+      subnet_name: "ubicloud-#{ps.ubid}"
     )
 
     hop_allocate_static_ip

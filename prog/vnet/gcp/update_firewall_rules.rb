@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 
 class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
   subject_is :vm
@@ -93,23 +92,25 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     @vm_rule_base_priority ||= VM_RULE_BASE_PRIORITY + (vm.name.hash.abs % VM_RULE_PRIORITY_RANGE)
   end
 
-  def vm_tag_value_name
-    @vm_tag_value_name ||= begin
-      tv = credential.tag_values_client.get_namespaced_tag_value(
-        name: "#{gcp_project_id}/#{tag_key_short_name}/fwvm-#{vm.name}"
-      )
-      tv.name
-    end
+  def vm_private_ip
+    @vm_private_ip ||= vm.nics.first&.private_ipv4&.network&.to_s
+  end
+
+  def vm_dest_ip_range
+    "#{vm_private_ip}/32"
   end
 
   def list_existing_vm_policy_rules
+    return [] unless vm_private_ip
+
     policy = credential.network_firewall_policies_client.get(
       project: gcp_project_id,
       firewall_policy: firewall_policy_name
     )
 
     (policy.rules || []).select { |rule|
-      rule.target_secure_tags&.any? { |t| t.name == vm_tag_value_name }
+      rule.direction == "INGRESS" && rule.action == "allow" &&
+        rule.match&.dest_ip_ranges&.include?(vm_dest_ip_range)
     }
   rescue Google::Cloud::Error
     []
@@ -160,11 +161,9 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       action: "allow",
       match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
         src_ip_ranges: desired[:source_ranges],
+        dest_ip_ranges: [vm_dest_ip_range],
         layer4_configs:
-      ),
-      target_secure_tags: [
-        Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: vm_tag_value_name)
-      ]
+      )
     )
   end
 
@@ -176,19 +175,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     @gcp_project_id ||= credential.project_id
   end
 
-  def tag_key_short_name
-    @tag_key_short_name ||= begin
-      ps = vm.nics.first&.private_subnet
-      project = ps ? ps.project : vm.project
-      Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(project)
-    end
-  end
-
   def firewall_policy_name
-    @firewall_policy_name ||= begin
-      ps = vm.nics.first&.private_subnet
-      project = ps ? ps.project : vm.project
-      Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
-    end
+    @firewall_policy_name ||= Prog::Vnet::Gcp::SubnetNexus.vpc_name(vm.location)
   end
 end

@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
-require "google/cloud/resource_manager/v3"
 
 class PrivateSubnet < Sequel::Model
   module Gcp
@@ -20,16 +19,11 @@ class PrivateSubnet < Sequel::Model
     def create_cross_subnet_rules(other)
       cred = location.location_credential
       project_id = cred.project_id
-      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
-      tag_key_short = Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(project)
+      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(location)
 
       directions = %w[egress ingress]
       [self, other].each do |src|
         dst = (src == self) ? other : self
-
-        src_tag_value = cred.tag_values_client.get_namespaced_tag_value(
-          name: "#{project_id}/#{tag_key_short}/ps-#{src.ubid}"
-        )
 
         directions.each do |dir|
           priority = cross_subnet_rule_priority(src, dst, dir)
@@ -46,19 +40,18 @@ class PrivateSubnet < Sequel::Model
               ]
             }
             if dir == "egress"
+              matcher_attrs[:src_ip_ranges] = [src.net4.to_s]
               matcher_attrs[:dest_ip_ranges] = [dst.net4.to_s]
             else
               matcher_attrs[:src_ip_ranges] = [dst.net4.to_s]
+              matcher_attrs[:dest_ip_ranges] = [src.net4.to_s]
             end
 
             rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
               priority:,
               direction: dir.upcase,
               action: "allow",
-              match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(**matcher_attrs),
-              target_secure_tags: [
-                Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: src_tag_value.name)
-              ]
+              match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(**matcher_attrs)
             )
             cred.network_firewall_policies_client.add_rule(
               project: project_id,
@@ -73,7 +66,7 @@ class PrivateSubnet < Sequel::Model
     def delete_cross_subnet_rules(other)
       cred = location.location_credential
       project_id = cred.project_id
-      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
+      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(location)
 
       directions = %w[egress ingress]
       [self, other].each do |src|
