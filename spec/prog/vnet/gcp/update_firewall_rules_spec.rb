@@ -17,6 +17,8 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   }
   let(:vm_dest_ip_range) { "10.0.0.1/32" }
 
+  let(:vm_dest_ipv6_range) { "fd00::/128" }
+
   before do
     nx.instance_variable_set(:@vm, vm)
     nic = instance_double(Nic)
@@ -24,6 +26,10 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
     network = instance_double(NetAddr::IPv4, to_s: "10.0.0.1")
     allow(private_ipv4).to receive(:network).and_return(network)
     allow(nic).to receive(:private_ipv4).and_return(private_ipv4)
+    private_ipv6 = instance_double(NetAddr::IPv6Net)
+    ipv6_network = instance_double(NetAddr::IPv6, to_s: "fd00::")
+    allow(private_ipv6).to receive(:network).and_return(ipv6_network)
+    allow(nic).to receive(:private_ipv6).and_return(private_ipv6)
     allow(vm).to receive_messages(location:, nics: [nic])
   end
 
@@ -105,7 +111,7 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect(nfp_client).to receive(:add_rule) do |args|
         rule = args[:firewall_policy_rule_resource]
         expect(rule.match.src_ip_ranges).to eq(["::/0"])
-        expect(rule.match.dest_ip_ranges).to eq([vm_dest_ip_range])
+        expect(rule.match.dest_ip_ranges).to eq([vm_dest_ipv6_range])
         expect(rule.match.layer4_configs.first.ip_protocol).to eq("tcp")
         expect(rule.match.layer4_configs.first.ports).to eq(["5432"])
       end

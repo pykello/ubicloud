@@ -18,8 +18,8 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     rules = vm.firewall_rules.select(&:port_range)
     ip4_rules, ip6_rules = rules.partition { |r| !r.ip6? }
 
-    desired_rules = build_desired_policy_rules(ip4_rules) +
-      build_desired_policy_rules(ip6_rules)
+    desired_rules = build_desired_policy_rules(ip4_rules, ip6: false) +
+      build_desired_policy_rules(ip6_rules, ip6: true)
 
     existing_rules = list_existing_vm_policy_rules
 
@@ -47,7 +47,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
 
   private
 
-  def build_desired_policy_rules(rules)
+  def build_desired_policy_rules(rules, ip6:)
     return [] if rules.empty?
 
     rules_by_cidr = rules.group_by { |r| r.cidr.to_s }
@@ -62,6 +62,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       desired << {
         priority: vm_rule_base_priority + idx,
         source_ranges: [cidr],
+        dest_ip_range: ip6 ? vm_dest_ipv6_range : vm_dest_ip_range,
         layer4_configs:
       }
     end
@@ -74,6 +75,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     return false unless matcher
 
     matcher.src_ip_ranges.to_a.sort == desired[:source_ranges].sort &&
+      matcher.dest_ip_ranges.to_a == [desired[:dest_ip_range]] &&
       matcher.layer4_configs.length == desired[:layer4_configs].length &&
       desired[:layer4_configs].all? { |d|
         matcher.layer4_configs.any? { |e|
@@ -100,6 +102,14 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     "#{vm_private_ip}/32"
   end
 
+  def vm_private_ipv6
+    @vm_private_ipv6 ||= vm.nics.first&.private_ipv6&.network&.to_s
+  end
+
+  def vm_dest_ipv6_range
+    vm_private_ipv6 ? "#{vm_private_ipv6}/128" : vm_dest_ip_range
+  end
+
   def list_existing_vm_policy_rules
     return [] unless vm_private_ip
 
@@ -108,9 +118,11 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       firewall_policy: firewall_policy_name
     )
 
+    vm_dest_ranges = [vm_dest_ip_range, vm_dest_ipv6_range].compact.uniq
+
     (policy.rules || []).select { |rule|
       rule.direction == "INGRESS" && rule.action == "allow" &&
-        rule.match&.dest_ip_ranges&.include?(vm_dest_ip_range)
+        rule.match&.dest_ip_ranges&.any? { |r| vm_dest_ranges.include?(r) }
     }
   rescue Google::Cloud::Error
     []
@@ -161,7 +173,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       action: "allow",
       match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
         src_ip_ranges: desired[:source_ranges],
-        dest_ip_ranges: [vm_dest_ip_range],
+        dest_ip_ranges: [desired[:dest_ip_range]],
         layer4_configs:
       )
     )
