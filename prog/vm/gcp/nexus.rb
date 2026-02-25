@@ -178,14 +178,13 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
 
     vm.update(cores: vm.vcpus / 2, allocated_at: Time.now, ephemeral_net6: public_ipv6)
 
+    vm.incr_update_firewall_rules
     hop_wait_sshable
   end
 
   label def wait_sshable
     if retval&.dig("msg") == "firewall rule is added"
       decr_update_firewall_rules
-    elsif !vm.update_firewall_rules_set?
-      vm.incr_update_firewall_rules
     end
 
     when_update_firewall_rules_set? do

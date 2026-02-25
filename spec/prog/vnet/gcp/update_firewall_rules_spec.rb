@@ -119,7 +119,7 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "creates separate rules for IPv4 and IPv6" do
+    it "creates separate rules for IPv4 and IPv6 with distinct priorities" do
       rules = [
         instance_double(FirewallRule, ip6?: true, cidr: NetAddr::IPv6Net.parse("::/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp"),
@@ -129,14 +129,15 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect(vm).to receive(:firewall_rules).and_return(rules)
       expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      created_cidrs = []
+      created_rules = []
       expect(nfp_client).to receive(:add_rule).twice do |args|
         rule = args[:firewall_policy_rule_resource]
-        created_cidrs << rule.match.src_ip_ranges.to_a
+        created_rules << {priority: rule.priority, src: rule.match.src_ip_ranges.to_a}
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
-      expect(created_cidrs.flatten).to contain_exactly("0.0.0.0/0", "::/0")
+      expect(created_rules.map { |r| r[:src] }.flatten).to contain_exactly("0.0.0.0/0", "::/0")
+      expect(created_rules.map { |r| r[:priority] }.uniq.size).to eq(2)
     end
 
     it "updates an existing policy rule when it doesn't match" do
@@ -320,6 +321,20 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect(nfp_client).to receive(:get).and_return(empty_policy)
 
       expect(nfp_client).to receive(:add_rule).and_raise(Google::Cloud::AlreadyExistsError.new("exists"))
+      expect(nfp_client).to receive(:patch_rule)
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "falls back to update when insert raises InvalidArgumentError" do
+      rules = [
+        instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
+          port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
+      ]
+      expect(vm).to receive(:firewall_rules).and_return(rules)
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
+
+      expect(nfp_client).to receive(:add_rule).and_raise(Google::Cloud::InvalidArgumentError.new("Cannot have rules with the same priorities"))
       expect(nfp_client).to receive(:patch_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})

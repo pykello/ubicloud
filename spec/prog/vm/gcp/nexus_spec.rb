@@ -398,7 +398,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect(Time).to receive(:now).at_least(:once).and_return(now)
 
       expect { nx.wait_instance_created }.to hop("wait_sshable")
-      vm.reload
+        .and change { vm.reload.update_firewall_rules_set? }.from(false).to(true)
       expect(vm.cores).to eq(1)
       expect(vm.allocated_at).to eq(now)
       expect(vm.assigned_vm_address.ip.to_s).to eq("35.192.0.1/32")
@@ -505,36 +505,32 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
   end
 
   describe "#wait_sshable" do
-    it "increments update_firewall_rules semaphore and hops to create_billing_record on first run" do
-      expect { nx.wait_sshable }.to hop("create_billing_record")
-        .and change { vm.reload.update_firewall_rules_set? }.from(false).to(true)
-    end
-
-    it "pushes update_firewall_rules when semaphore is already set" do
+    it "pushes update_firewall_rules when semaphore is set" do
       vm.incr_update_firewall_rules
       expect(nx).to receive(:push).with(Prog::Vnet::Gcp::UpdateFirewallRules, {}, :update_firewall_rules).and_call_original
       expect { nx.wait_sshable }.to hop(:update_firewall_rules, "Vnet::Gcp::UpdateFirewallRules")
     end
 
+    it "decrements semaphore when firewall rules are added" do
+      vm.incr_update_firewall_rules
+      st.update(retval: Sequel.pg_jsonb({"msg" => "firewall rule is added"}))
+      expect { nx.wait_sshable }.to hop("create_billing_record")
+        .and change { vm.reload.update_firewall_rules_set? }.from(true).to(false)
+    end
+
     it "naps if not sshable" do
       AssignedVmAddress.create(dst_vm_id: vm.id, ip: "10.0.0.1/32")
-      st.update(retval: Sequel.pg_jsonb({"msg" => "firewall rule is added"}))
-      vm.incr_update_firewall_rules
       expect(Socket).to receive(:tcp).with("10.0.0.1", 22, connect_timeout: 1).and_raise Errno::ECONNREFUSED
       expect { nx.wait_sshable }.to nap(1)
     end
 
     it "hops to create_billing_record if sshable" do
       AssignedVmAddress.create(dst_vm_id: vm.id, ip: "10.0.0.1/32")
-      st.update(retval: Sequel.pg_jsonb({"msg" => "firewall rule is added"}))
-      vm.incr_update_firewall_rules
       expect(Socket).to receive(:tcp).with("10.0.0.1", 22, connect_timeout: 1)
       expect { nx.wait_sshable }.to hop("create_billing_record")
     end
 
     it "hops to create_billing_record if ipv4 is not available" do
-      st.update(retval: Sequel.pg_jsonb({"msg" => "firewall rule is added"}))
-      vm.incr_update_firewall_rules
       expect(vm.ip4).to be_nil
       expect { nx.wait_sshable }.to hop("create_billing_record")
     end

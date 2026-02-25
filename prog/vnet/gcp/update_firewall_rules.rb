@@ -18,8 +18,9 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
     rules = vm.firewall_rules.select(&:port_range)
     ip4_rules, ip6_rules = rules.partition { |r| !r.ip6? }
 
-    desired_rules = build_desired_policy_rules(ip4_rules, ip6: false) +
-      build_desired_policy_rules(ip6_rules, ip6: true)
+    ip4_desired = build_desired_policy_rules(ip4_rules, ip6: false)
+    ip6_desired = build_desired_policy_rules(ip6_rules, ip6: true, priority_offset: ip4_desired.length)
+    desired_rules = ip4_desired + ip6_desired
 
     existing_rules = list_existing_vm_policy_rules
 
@@ -47,7 +48,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
 
   private
 
-  def build_desired_policy_rules(rules, ip6:)
+  def build_desired_policy_rules(rules, ip6:, priority_offset: 0)
     return [] if rules.empty?
 
     rules_by_cidr = rules.group_by { |r| r.cidr.to_s }
@@ -60,7 +61,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       end
 
       desired << {
-        priority: vm_rule_base_priority + idx,
+        priority: vm_rule_base_priority + priority_offset + idx,
         source_ranges: [cidr],
         dest_ip_range: ip6 ? vm_dest_ipv6_range : vm_dest_ip_range,
         layer4_configs:
@@ -135,7 +136,7 @@ class Prog::Vnet::Gcp::UpdateFirewallRules < Prog::Base
       firewall_policy: firewall_policy_name,
       firewall_policy_rule_resource: rule
     )
-  rescue Google::Cloud::AlreadyExistsError
+  rescue Google::Cloud::AlreadyExistsError, Google::Cloud::InvalidArgumentError
     update_policy_rule(desired)
   end
 
