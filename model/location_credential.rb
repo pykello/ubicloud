@@ -4,6 +4,7 @@ require_relative "../model"
 require "aws-sdk-ec2"
 require "aws-sdk-iam"
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 require "google/cloud/storage"
 require "google/apis/iam_v1"
 require "googleauth"
@@ -69,6 +70,30 @@ class LocationCredential < Sequel::Model
     end
   end
 
+  def network_firewall_policies_client
+    @network_firewall_policies_client ||= Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client.new do |config|
+      config.credentials = parsed_credentials
+    end
+  end
+
+  def tag_keys_client
+    @tag_keys_client ||= Google::Cloud::ResourceManager::V3::TagKeys::Client.new do |config|
+      config.credentials = gcp_grpc_credentials
+    end
+  end
+
+  def tag_values_client
+    @tag_values_client ||= Google::Cloud::ResourceManager::V3::TagValues::Client.new do |config|
+      config.credentials = gcp_grpc_credentials
+    end
+  end
+
+  def tag_bindings_client
+    @tag_bindings_client ||= Google::Cloud::ResourceManager::V3::TagBindings::Client.new do |config|
+      config.credentials = gcp_grpc_credentials
+    end
+  end
+
   def networks_client
     @networks_client ||= Google::Cloud::Compute::V1::Networks::Rest::Client.new do |config|
       config.credentials = parsed_credentials
@@ -106,6 +131,13 @@ class LocationCredential < Sequel::Model
   end
 
   private
+
+  def gcp_grpc_credentials
+    @gcp_grpc_credentials ||= Google::Auth::ServiceAccountCredentials.make_creds(
+      json_key_io: StringIO.new(credentials_json),
+      scope: "https://www.googleapis.com/auth/cloud-platform"
+    )
+  end
 
   def gcp_iam_client
     @gcp_iam_client ||= begin

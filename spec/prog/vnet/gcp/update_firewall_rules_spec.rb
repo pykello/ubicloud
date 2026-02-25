@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 
 RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   subject(:nx) { described_class.new(st) }
@@ -9,17 +10,27 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   let(:vm) { instance_double(Vm, name: "testvm") }
   let(:ubicloud_project) { instance_double(Project, ubid: "pjtest1234567890abcdef12") }
   let(:vpc_name) { "ubicloud-proj-#{ubicloud_project.ubid}" }
-  let(:firewalls_client) { instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client) }
+  let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
   let(:credential) {
     instance_double(LocationCredential,
-      firewalls_client:,
+      network_firewall_policies_client: nfp_client,
+      tag_values_client:,
       project_id: "test-gcp-project")
   }
   let(:location) { instance_double(Location, location_credential: credential) }
+  let(:vm_tag_value) {
+    Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/999", short_name: "fwvm-testvm")
+  }
 
   before do
     nx.instance_variable_set(:@vm, vm)
     allow(vm).to receive_messages(location:, project: ubicloud_project, nics: [])
+
+    # Default: resolve vm tag value
+    allow(tag_values_client).to receive(:get_namespaced_tag_value)
+      .with(name: "test-gcp-project/#{vpc_name}/fwvm-testvm")
+      .and_return(vm_tag_value)
   end
 
   describe "#before_run" do
@@ -35,38 +46,42 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
   end
 
   describe "#update_firewall_rules" do
+    let(:empty_policy) {
+      Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [])
+    }
+
     it "pops when there are no firewall rules" do
       expect(vm).to receive(:firewall_rules).and_return([])
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "creates a GCE firewall rule for IPv4 rules" do
+    it "creates a policy rule for IPv4 rules" do
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert) do |args|
+      expect(nfp_client).to receive(:add_rule) do |args|
         expect(args[:project]).to eq("test-gcp-project")
-        fw = args[:firewall_resource]
-        expect(fw.name).to eq("ubicloud-fw-testvm")
-        expect(fw.direction).to eq("INGRESS")
-        expect(fw.network).to eq("projects/test-gcp-project/global/networks/#{vpc_name}")
-        expect(fw.source_ranges).to eq(["0.0.0.0/0"])
-        expect(fw.target_tags).to eq(["testvm"])
-        expect(fw.allowed.size).to eq(1)
-        expect(fw.allowed.first.I_p_protocol).to eq("tcp")
-        expect(fw.allowed.first.ports).to eq(["5432"])
+        expect(args[:firewall_policy]).to eq(vpc_name)
+        rule = args[:firewall_policy_rule_resource]
+        expect(rule.direction).to eq("INGRESS")
+        expect(rule.action).to eq("allow")
+        expect(rule.match.src_ip_ranges).to eq(["0.0.0.0/0"])
+        expect(rule.match.layer4_configs.size).to eq(1)
+        expect(rule.match.layer4_configs.first.ip_protocol).to eq("tcp")
+        expect(rule.match.layer4_configs.first.ports).to eq(["5432"])
+        expect(rule.target_secure_tags.first.name).to eq("tagValues/999")
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "creates separate GCE rules for different CIDRs" do
+    it "creates separate policy rules for different CIDRs" do
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp"),
@@ -74,37 +89,36 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(22..23), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      created_names = []
-      expect(firewalls_client).to receive(:insert).twice do |args|
-        created_names << args[:firewall_resource].name
+      created_priorities = []
+      expect(nfp_client).to receive(:add_rule).twice do |args|
+        created_priorities << args[:firewall_policy_rule_resource].priority
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
-      expect(created_names).to contain_exactly("ubicloud-fw-testvm", "ubicloud-fw-testvm-1")
+      expect(created_priorities.uniq.size).to eq(2)
     end
 
-    it "creates a GCE firewall rule for IPv6 rules" do
+    it "creates a policy rule for IPv6 rules" do
       rules = [
         instance_double(FirewallRule, ip6?: true, cidr: NetAddr::IPv6Net.parse("::/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.name).to eq("ubicloud-fw6-testvm")
-        expect(fw.source_ranges).to eq(["::/0"])
-        expect(fw.allowed.first.I_p_protocol).to eq("tcp")
-        expect(fw.allowed.first.ports).to eq(["5432"])
+      expect(nfp_client).to receive(:add_rule) do |args|
+        rule = args[:firewall_policy_rule_resource]
+        expect(rule.match.src_ip_ranges).to eq(["::/0"])
+        expect(rule.match.layer4_configs.first.ip_protocol).to eq("tcp")
+        expect(rule.match.layer4_configs.first.ports).to eq(["5432"])
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "creates separate GCE rules for IPv4 and IPv6" do
+    it "creates separate rules for IPv4 and IPv6" do
       rules = [
         instance_double(FirewallRule, ip6?: true, cidr: NetAddr::IPv6Net.parse("::/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp"),
@@ -112,49 +126,60 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      created_rules = []
-      expect(firewalls_client).to receive(:insert).twice do |args|
-        fw = args[:firewall_resource]
-        created_rules << {name: fw.name, source_ranges: fw.source_ranges.to_a}
+      created_cidrs = []
+      expect(nfp_client).to receive(:add_rule).twice do |args|
+        rule = args[:firewall_policy_rule_resource]
+        created_cidrs << rule.match.src_ip_ranges.to_a
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
-      expect(created_rules).to contain_exactly(
-        {name: "ubicloud-fw-testvm", source_ranges: ["0.0.0.0/0"]},
-        {name: "ubicloud-fw6-testvm", source_ranges: ["::/0"]}
-      )
+      expect(created_cidrs.flatten).to contain_exactly("0.0.0.0/0", "::/0")
     end
 
-    it "updates an existing GCE firewall rule" do
+    it "updates an existing policy rule when it doesn't match" do
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
 
-      existing = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
-      expect(firewalls_client).to receive(:list).and_return([existing])
-      expect(firewalls_client).to receive(:list).and_return([])
+      base_priority = described_class::VM_RULE_BASE_PRIORITY + ("testvm".hash.abs % described_class::VM_RULE_PRIORITY_RANGE)
+      existing_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: base_priority,
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          src_ip_ranges: ["10.0.0.0/8"],
+          layer4_configs: [Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(ip_protocol: "tcp", ports: ["22"])]
+        ),
+        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [existing_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
 
-      expect(firewalls_client).to receive(:update).with(
-        hash_including(project: "test-gcp-project", firewall: "ubicloud-fw-testvm")
+      expect(nfp_client).to receive(:patch_rule).with(
+        hash_including(project: "test-gcp-project", firewall_policy: vpc_name, priority: base_priority)
       )
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
-    it "deletes stale GCE firewall rules" do
+    it "deletes stale policy rules" do
       expect(vm).to receive(:firewall_rules).and_return([])
 
-      stale = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
-      expect(firewalls_client).to receive(:list).and_return([stale])
-      expect(firewalls_client).to receive(:list).and_return([])
+      stale_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 12345,
+        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [stale_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
 
-      expect(firewalls_client).to receive(:delete).with(
+      expect(nfp_client).to receive(:remove_rule).with(
         project: "test-gcp-project",
-        firewall: "ubicloud-fw-testvm"
+        firewall_policy: vpc_name,
+        priority: 12345
       )
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
@@ -163,11 +188,14 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
     it "handles NotFoundError when deleting stale rules" do
       expect(vm).to receive(:firewall_rules).and_return([])
 
-      stale = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
-      expect(firewalls_client).to receive(:list).and_return([stale])
-      expect(firewalls_client).to receive(:list).and_return([])
+      stale_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 12345,
+        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [stale_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
 
-      expect(firewalls_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(nfp_client).to receive(:remove_rule).and_raise(Google::Cloud::NotFoundError.new("not found"))
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
@@ -178,24 +206,9 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).and_raise(Google::Cloud::Error.new("list failed"))
+      expect(nfp_client).to receive(:get).and_raise(Google::Cloud::Error.new("list failed"))
 
-      expect(firewalls_client).to receive(:insert)
-
-      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
-    end
-
-    it "deletes stale IPv6 GCE firewall rules when IPv6 rules are removed" do
-      expect(vm).to receive(:firewall_rules).and_return([])
-
-      stale_v6 = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw6-testvm")
-      expect(firewalls_client).to receive(:list).and_return([])
-      expect(firewalls_client).to receive(:list).and_return([stale_v6])
-
-      expect(firewalls_client).to receive(:delete).with(
-        project: "test-gcp-project",
-        firewall: "ubicloud-fw6-testvm"
-      )
+      expect(nfp_client).to receive(:add_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
@@ -206,11 +219,11 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(80..10000), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.allowed.first.ports).to eq(["80-9999"])
+      expect(nfp_client).to receive(:add_rule) do |args|
+        rule = args[:firewall_policy_rule_resource]
+        expect(rule.match.layer4_configs.first.ports).to eq(["80-9999"])
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
@@ -224,13 +237,12 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(22..23), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.name).to eq("ubicloud-fw-testvm")
-        expect(fw.allowed.size).to eq(1)
-        expect(fw.allowed.first.ports).to contain_exactly("5432", "22")
+      expect(nfp_client).to receive(:add_rule) do |args|
+        rule = args[:firewall_policy_rule_resource]
+        expect(rule.match.layer4_configs.size).to eq(1)
+        expect(rule.match.layer4_configs.first.ports).to contain_exactly("5432", "22")
       end
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
@@ -244,12 +256,12 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(53..54), protocol: "udp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.allowed.size).to eq(2)
-        protocols = fw.allowed.map(&:I_p_protocol)
+      expect(nfp_client).to receive(:add_rule) do |args|
+        rule = args[:firewall_policy_rule_resource]
+        expect(rule.match.layer4_configs.size).to eq(2)
+        protocols = rule.match.layer4_configs.map(&:ip_protocol)
         expect(protocols).to contain_exactly("tcp", "udp")
       end
 
@@ -264,9 +276,9 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert).once
+      expect(nfp_client).to receive(:add_rule).once
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
@@ -277,10 +289,10 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
           port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
 
-      expect(firewalls_client).to receive(:insert).and_raise(Google::Cloud::AlreadyExistsError.new("exists"))
-      expect(firewalls_client).to receive(:update)
+      expect(nfp_client).to receive(:add_rule).and_raise(Google::Cloud::AlreadyExistsError.new("exists"))
+      expect(nfp_client).to receive(:patch_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
@@ -292,43 +304,68 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
 
-      existing = Google::Cloud::Compute::V1::Firewall.new(
-        name: "ubicloud-fw-testvm",
-        source_ranges: ["0.0.0.0/0"],
-        target_tags: ["testvm"],
-        allowed: [
-          Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "tcp", ports: ["5432"])
-        ]
+      base_priority = described_class::VM_RULE_BASE_PRIORITY + ("testvm".hash.abs % described_class::VM_RULE_PRIORITY_RANGE)
+      existing_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: base_priority,
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          src_ip_ranges: ["0.0.0.0/0"],
+          layer4_configs: [
+            Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(
+              ip_protocol: "tcp",
+              ports: ["5432"]
+            )
+          ]
+        ),
+        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")]
       )
-      expect(firewalls_client).to receive(:list).and_return([existing])
-      expect(firewalls_client).to receive(:list).and_return([])
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [existing_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
 
-      expect(firewalls_client).not_to receive(:update)
-      expect(firewalls_client).not_to receive(:insert)
+      expect(nfp_client).not_to receive(:patch_rule)
+      expect(nfp_client).not_to receive(:add_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end
 
     it "resolves vpc name from NIC private_subnet when available" do
-      # Clear memoized vpc name from previous test runs
-      nx.instance_variable_set(:@gcp_vpc_name, nil)
+      nx.instance_variable_set(:@firewall_policy_name, nil)
+      nx.instance_variable_set(:@tag_key_short_name, nil)
+      nx.instance_variable_set(:@vm_tag_value_name, nil)
       nic = instance_double(Nic)
       ps = instance_double(PrivateSubnet, project: ubicloud_project)
       allow(vm).to receive(:nics).and_return([nic])
       allow(nic).to receive(:private_subnet).and_return(ps)
 
-      # Need at least one rule to trigger build_firewall_resource -> gcp_vpc_name
       rules = [
         instance_double(FirewallRule, ip6?: false, cidr: NetAddr::IPv4Net.parse("0.0.0.0/0"),
           port_range: Sequel.pg_range(22..23), protocol: "tcp")
       ]
       expect(vm).to receive(:firewall_rules).and_return(rules)
-      expect(firewalls_client).to receive(:list).twice.and_return([])
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [])
+      )
 
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.network).to include(vpc_name)
+      expect(nfp_client).to receive(:add_rule) do |args|
+        expect(args[:firewall_policy]).to eq(vpc_name)
       end
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "ignores rules targeting other VMs in the same policy" do
+      expect(vm).to receive(:firewall_rules).and_return([])
+
+      other_vm_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 50000,
+        target_secure_tags: [Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/888")]
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [other_vm_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+
+      # Should not try to delete the other VM's rule
+      expect(nfp_client).not_to receive(:remove_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
     end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 
 class PrivateSubnet < Sequel::Model
   module Gcp
@@ -19,31 +20,51 @@ class PrivateSubnet < Sequel::Model
     def create_cross_subnet_rules(other)
       cred = location.location_credential
       project_id = cred.project_id
-      vpc = Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
+      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
+      tag_key_short = Prog::Vnet::Gcp::SubnetNexus.tag_key_short_name(project)
 
       directions = %w[egress ingress]
       [self, other].each do |src|
         dst = (src == self) ? other : self
+
+        src_tag_value = cred.tag_values_client.get_namespaced_tag_value(
+          name: "#{project_id}/#{tag_key_short}/ps-#{src.ubid}"
+        )
+
         directions.each do |dir|
-          name = cross_subnet_rule_name(src, dst, dir)
+          priority = cross_subnet_rule_priority(src, dst, dir)
           begin
-            cred.firewalls_client.get(project: project_id, firewall: name)
+            cred.network_firewall_policies_client.get_rule(
+              project: project_id,
+              firewall_policy: policy_name,
+              priority:
+            )
           rescue Google::Cloud::NotFoundError
-            attrs = {
-              name:,
-              network: "projects/#{project_id}/global/networks/#{vpc}",
-              direction: dir.upcase,
-              priority: 1000,
-              target_tags: ["ps-#{src.ubid}"],
-              allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")]
+            matcher_attrs = {
+              layer4_configs: [
+                Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(ip_protocol: "all")
+              ]
             }
             if dir == "egress"
-              attrs[:destination_ranges] = [dst.net4.to_s]
+              matcher_attrs[:dest_ip_ranges] = [dst.net4.to_s]
             else
-              attrs[:source_ranges] = [dst.net4.to_s]
+              matcher_attrs[:src_ip_ranges] = [dst.net4.to_s]
             end
-            fw = Google::Cloud::Compute::V1::Firewall.new(**attrs)
-            cred.firewalls_client.insert(project: project_id, firewall_resource: fw)
+
+            rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+              priority:,
+              direction: dir.upcase,
+              action: "allow",
+              match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(**matcher_attrs),
+              target_secure_tags: [
+                Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: src_tag_value.name)
+              ]
+            )
+            cred.network_firewall_policies_client.add_rule(
+              project: project_id,
+              firewall_policy: policy_name,
+              firewall_policy_rule_resource: rule
+            )
           end
         end
       end
@@ -52,21 +73,27 @@ class PrivateSubnet < Sequel::Model
     def delete_cross_subnet_rules(other)
       cred = location.location_credential
       project_id = cred.project_id
+      policy_name = Prog::Vnet::Gcp::SubnetNexus.vpc_name(project)
 
       directions = %w[egress ingress]
       [self, other].each do |src|
         dst = (src == self) ? other : self
         directions.each do |dir|
-          name = cross_subnet_rule_name(src, dst, dir)
-          cred.firewalls_client.delete(project: project_id, firewall: name)
+          priority = cross_subnet_rule_priority(src, dst, dir)
+          cred.network_firewall_policies_client.remove_rule(
+            project: project_id,
+            firewall_policy: policy_name,
+            priority:
+          )
         rescue Google::Cloud::NotFoundError
           # Already deleted
         end
       end
     end
 
-    def cross_subnet_rule_name(src, dst, direction)
-      "ubi-xsub-#{direction}-#{src.ubid[0, 8]}-#{dst.ubid[0, 8]}"
+    def cross_subnet_rule_priority(src, dst, direction)
+      hash_input = "#{src.ubid}-#{dst.ubid}-#{direction}"
+      2000 + (hash_input.hash.abs % 8000)
     end
   end
 end

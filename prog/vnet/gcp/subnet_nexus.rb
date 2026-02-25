@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 require_relative "../../../lib/gcp_lro"
 
 class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
@@ -12,8 +13,19 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
   # GCE internal IPv6 ranges used by dual-stack subnets (ULA space)
   GCE_INTERNAL_IPV6_RANGES = ["fd20::/20"].freeze
 
+  # Priority assignments for firewall policy rules.
+  # Lower number = higher priority. Range: 0–65535.
+  DENY_RULE_BASE_PRIORITY = 65534
+  ALLOW_SUBNET_BASE_PRIORITY = 1000
+
   def self.vpc_name(project)
     "ubicloud-proj-#{project.ubid}"
+  end
+
+  # Tag key short_name for a VPC (must be unique within the GCP project).
+  # Used with purpose GCE_FIREWALL to create secure tags for firewall policies.
+  def self.tag_key_short_name(project)
+    vpc_name(project)
   end
 
   label def start
@@ -42,7 +54,7 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
       hop_wait_create_vpc
     end
 
-    hop_create_vpc_firewall_rules
+    hop_create_firewall_policy
   end
 
   label def wait_create_vpc
@@ -50,7 +62,6 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     nap 5 unless op.status == :DONE
 
     if op_error?(op)
-      # LRO reported an error — check if the resource was created anyway
       begin
         credential.networks_client.get(project: gcp_project_id, network: gcp_vpc_name)
         Clog.emit("GCP LRO error but resource exists",
@@ -61,36 +72,53 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     end
 
     clear_gcp_op
-    hop_create_vpc_firewall_rules
+    hop_create_firewall_policy
   end
 
-  label def create_vpc_firewall_rules
-    ensure_deny_rule(
-      name: "#{gcp_vpc_name}-deny-ingress",
+  label def create_firewall_policy
+    ensure_firewall_policy
+    hop_create_tag_key
+  end
+
+  label def create_tag_key
+    ensure_tag_key
+    ensure_tag_value("vm")
+    hop_create_vpc_deny_rules
+  end
+
+  label def create_vpc_deny_rules
+    vm_tag_value_name = resolve_tag_value_name("vm")
+
+    ensure_policy_rule(
+      priority: DENY_RULE_BASE_PRIORITY,
       direction: "INGRESS",
-      source_ranges: RFC1918_RANGES,
-      destination_ranges: nil
+      action: "deny",
+      target_secure_tags: [vm_tag_value_name],
+      src_ip_ranges: RFC1918_RANGES
     )
 
-    ensure_deny_rule(
-      name: "#{gcp_vpc_name}-deny-egress",
+    ensure_policy_rule(
+      priority: DENY_RULE_BASE_PRIORITY - 1,
       direction: "EGRESS",
-      source_ranges: nil,
-      destination_ranges: RFC1918_RANGES
+      action: "deny",
+      target_secure_tags: [vm_tag_value_name],
+      dest_ip_ranges: RFC1918_RANGES
     )
 
-    ensure_deny_rule(
-      name: "#{gcp_vpc_name}-deny-ingress-ipv6",
+    ensure_policy_rule(
+      priority: DENY_RULE_BASE_PRIORITY - 2,
       direction: "INGRESS",
-      source_ranges: GCE_INTERNAL_IPV6_RANGES,
-      destination_ranges: nil
+      action: "deny",
+      target_secure_tags: [vm_tag_value_name],
+      src_ip_ranges: GCE_INTERNAL_IPV6_RANGES
     )
 
-    ensure_deny_rule(
-      name: "#{gcp_vpc_name}-deny-egress-ipv6",
+    ensure_policy_rule(
+      priority: DENY_RULE_BASE_PRIORITY - 3,
       direction: "EGRESS",
-      source_ranges: nil,
-      destination_ranges: GCE_INTERNAL_IPV6_RANGES
+      action: "deny",
+      target_secure_tags: [vm_tag_value_name],
+      dest_ip_ranges: GCE_INTERNAL_IPV6_RANGES
     )
 
     hop_create_subnet
@@ -144,29 +172,28 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
   end
 
   label def create_subnet_allow_rules
-    # Allow same-subnet egress (overrides the VPC-wide deny-egress at 65534)
-    # Uses subnet-specific tag so only VMs in this subnet match, not all VMs in VPC
-    ensure_allow_rule(
-      name: subnet_allow_rule_name("egress"),
+    ensure_tag_value(subnet_tag)
+
+    subnet_tag_value_name = resolve_tag_value_name(subnet_tag)
+
+    # Allow same-subnet IPv4 egress (overrides the VPC-wide deny-egress)
+    ensure_policy_rule(
+      priority: subnet_allow_priority,
       direction: "EGRESS",
-      source_ranges: nil,
-      destination_ranges: [private_subnet.net4.to_s],
-      target_tags: [subnet_tag],
-      allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")]
+      action: "allow",
+      target_secure_tags: [subnet_tag_value_name],
+      dest_ip_ranges: [private_subnet.net4.to_s],
+      layer4_configs: [{ip_protocol: "all"}]
     )
 
-    # Ingress is NOT allowed at subnet level — per-VM firewall rules control
-    # all ingress. This matches metal (iptables) and AWS (security groups)
-    # where ingress is denied by default.
-
     # Allow same-subnet IPv6 egress (overrides VPC-wide deny-egress-ipv6)
-    ensure_allow_rule(
-      name: subnet_allow_rule_name("egress-ipv6"),
+    ensure_policy_rule(
+      priority: subnet_allow_priority + 1,
       direction: "EGRESS",
-      source_ranges: nil,
-      destination_ranges: [private_subnet.net6.to_s],
-      target_tags: [subnet_tag],
-      allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")]
+      action: "allow",
+      target_secure_tags: [subnet_tag_value_name],
+      dest_ip_ranges: [private_subnet.net6.to_s],
+      layer4_configs: [{ip_protocol: "all"}]
     )
 
     hop_wait
@@ -192,6 +219,9 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     private_subnet.remove_all_firewalls
 
     if private_subnet.nics.empty? && private_subnet.load_balancers.empty?
+      delete_subnet_tag_value
+      delete_subnet_policy_rules
+
       unless delete_gcp_subnet
         # GCE subnet still in use by a terminating instance — retry
         nap 5
@@ -208,46 +238,161 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
 
   private
 
-  def ensure_deny_rule(name:, direction:, source_ranges:, destination_ranges:)
-    credential.firewalls_client.get(project: gcp_project_id, firewall: name)
-  rescue Google::Cloud::NotFoundError
-    attrs = {
-      name:,
-      network: "projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}",
-      direction:,
-      priority: 65534,
-      target_tags: ["ubicloud-vm"],
-      denied: [Google::Cloud::Compute::V1::Denied.new(I_p_protocol: "all")]
-    }
-    attrs[:source_ranges] = source_ranges if source_ranges
-    attrs[:destination_ranges] = destination_ranges if destination_ranges
+  # --- Firewall policy management ---
 
-    fw = Google::Cloud::Compute::V1::Firewall.new(**attrs)
-    op = credential.firewalls_client.insert(project: gcp_project_id, firewall_resource: fw)
-    verify_lro(op, "firewall rule #{name}") {
-      credential.firewalls_client.get(project: gcp_project_id, firewall: name)
-    }
+  def firewall_policy_name
+    gcp_vpc_name
   end
 
-  def ensure_allow_rule(name:, direction:, source_ranges:, destination_ranges:, allowed:, target_tags: ["ubicloud-vm"])
-    credential.firewalls_client.get(project: gcp_project_id, firewall: name)
+  def ensure_firewall_policy
+    credential.network_firewall_policies_client.get(
+      project: gcp_project_id,
+      firewall_policy: firewall_policy_name
+    )
   rescue Google::Cloud::NotFoundError
-    attrs = {
-      name:,
-      network: "projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}",
-      direction:,
-      priority: 1000,
-      target_tags:,
-      allowed:
-    }
-    attrs[:source_ranges] = source_ranges if source_ranges
-    attrs[:destination_ranges] = destination_ranges if destination_ranges
+    op = credential.network_firewall_policies_client.insert(
+      project: gcp_project_id,
+      firewall_policy_resource: Google::Cloud::Compute::V1::FirewallPolicy.new(
+        name: firewall_policy_name,
+        description: "Ubicloud network firewall policy for #{gcp_vpc_name}"
+      )
+    )
+    wait_for_compute_global_op(op)
 
-    fw = Google::Cloud::Compute::V1::Firewall.new(**attrs)
-    op = credential.firewalls_client.insert(project: gcp_project_id, firewall_resource: fw)
-    verify_lro(op, "firewall rule #{name}") {
-      credential.firewalls_client.get(project: gcp_project_id, firewall: name)
+    # Associate the policy with the VPC network
+    assoc_op = credential.network_firewall_policies_client.add_association(
+      project: gcp_project_id,
+      firewall_policy: firewall_policy_name,
+      firewall_policy_association_resource: Google::Cloud::Compute::V1::FirewallPolicyAssociation.new(
+        name: gcp_vpc_name,
+        attachment_target: "projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}"
+      )
+    )
+    wait_for_compute_global_op(assoc_op)
+  end
+
+  def ensure_policy_rule(priority:, direction:, action:, target_secure_tags:, src_ip_ranges: nil, dest_ip_ranges: nil, layer4_configs: nil)
+    credential.network_firewall_policies_client.get_rule(
+      project: gcp_project_id,
+      firewall_policy: firewall_policy_name,
+      priority:
+    )
+  rescue Google::Cloud::NotFoundError
+    matcher_attrs = {}
+    matcher_attrs[:src_ip_ranges] = src_ip_ranges if src_ip_ranges
+    matcher_attrs[:dest_ip_ranges] = dest_ip_ranges if dest_ip_ranges
+
+    matcher_attrs[:layer4_configs] = if layer4_configs
+      layer4_configs.map { |cfg|
+        Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(**cfg)
+      }
+    else
+      [
+        Google::Cloud::Compute::V1::FirewallPolicyRuleMatcherLayer4Config.new(ip_protocol: "all")
+      ]
+    end
+
+    secure_tags = target_secure_tags.map { |tag_value_name|
+      Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: tag_value_name)
     }
+
+    rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+      priority:,
+      direction:,
+      action:,
+      match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(**matcher_attrs),
+      target_secure_tags: secure_tags
+    )
+
+    op = credential.network_firewall_policies_client.add_rule(
+      project: gcp_project_id,
+      firewall_policy: firewall_policy_name,
+      firewall_policy_rule_resource: rule
+    )
+    wait_for_compute_global_op(op)
+  end
+
+  # --- Tag management ---
+
+  def tag_key_short_name
+    @tag_key_short_name ||= self.class.tag_key_short_name(private_subnet.project)
+  end
+
+  def tag_key_parent
+    "projects/#{gcp_project_id}"
+  end
+
+  def ensure_tag_key
+    credential.tag_keys_client.get_namespaced_tag_key(
+      name: "#{gcp_project_id}/#{tag_key_short_name}"
+    )
+  rescue Google::Cloud::NotFoundError
+    op = credential.tag_keys_client.create_tag_key(
+      tag_key: Google::Cloud::ResourceManager::V3::TagKey.new(
+        parent: tag_key_parent,
+        short_name: tag_key_short_name,
+        description: "Ubicloud secure firewall tags for #{gcp_vpc_name}",
+        purpose: :GCE_FIREWALL,
+        purpose_data: {"network" => "#{tag_key_parent}/global/networks/#{gcp_vpc_name}"}
+      )
+    )
+    op.wait_until_done!
+    raise "Tag key creation failed: #{op.error.message}" if op.error?
+  end
+
+  def ensure_tag_value(short_name)
+    tag_key = credential.tag_keys_client.get_namespaced_tag_key(
+      name: "#{gcp_project_id}/#{tag_key_short_name}"
+    )
+    credential.tag_values_client.get_namespaced_tag_value(
+      name: "#{gcp_project_id}/#{tag_key_short_name}/#{short_name}"
+    )
+  rescue Google::Cloud::NotFoundError
+    tag_key ||= credential.tag_keys_client.get_namespaced_tag_key(
+      name: "#{gcp_project_id}/#{tag_key_short_name}"
+    )
+    op = credential.tag_values_client.create_tag_value(
+      tag_value: Google::Cloud::ResourceManager::V3::TagValue.new(
+        parent: tag_key.name,
+        short_name:,
+        description: "Ubicloud tag value: #{short_name}"
+      )
+    )
+    op.wait_until_done!
+    raise "Tag value creation failed: #{op.error.message}" if op.error?
+  end
+
+  def resolve_tag_value_name(short_name)
+    tv = credential.tag_values_client.get_namespaced_tag_value(
+      name: "#{gcp_project_id}/#{tag_key_short_name}/#{short_name}"
+    )
+    tv.name
+  end
+
+  # --- Destroy helpers ---
+
+  def delete_subnet_tag_value
+    tv = credential.tag_values_client.get_namespaced_tag_value(
+      name: "#{gcp_project_id}/#{tag_key_short_name}/#{subnet_tag}"
+    )
+    op = credential.tag_values_client.delete_tag_value(name: tv.name)
+    op.wait_until_done!
+  rescue Google::Cloud::NotFoundError
+    # Already deleted
+  end
+
+  def delete_subnet_policy_rules
+    [subnet_allow_priority, subnet_allow_priority + 1].each do |priority|
+      credential.network_firewall_policies_client.remove_rule(
+        project: gcp_project_id,
+        firewall_policy: firewall_policy_name,
+        priority:
+      )
+    rescue Google::Cloud::NotFoundError
+      # Already deleted
+    end
+  rescue Google::Cloud::NotFoundError
+    # Policy already deleted
   end
 
   def delete_gcp_subnet
@@ -273,20 +418,36 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     ).count
     return if remaining > 0
 
-    # Last GCP subnet in this project — clean up all firewall rules and VPC
-    delete_all_vpc_firewall_rules
+    # Last GCP subnet in this project — clean up firewall policy, tags, and VPC
+    delete_firewall_policy
+    delete_tag_key
     delete_vpc_network
   end
 
-  def delete_all_vpc_firewall_rules
-    rules = credential.firewalls_client.list(project: gcp_project_id, filter: "network=\"https://www.googleapis.com/compute/v1/projects/#{gcp_project_id}/global/networks/#{gcp_vpc_name}\"")
-    rules.each do |rule|
-      credential.firewalls_client.delete(project: gcp_project_id, firewall: rule.name)
+  def delete_firewall_policy
+    credential.network_firewall_policies_client.delete(
+      project: gcp_project_id,
+      firewall_policy: firewall_policy_name
+    )
+  rescue Google::Cloud::NotFoundError
+    # Already deleted
+  end
+
+  def delete_tag_key
+    tag_key = credential.tag_keys_client.get_namespaced_tag_key(
+      name: "#{gcp_project_id}/#{tag_key_short_name}"
+    )
+    # Delete remaining tag values first
+    credential.tag_values_client.list_tag_values(parent: tag_key.name).each do |tv|
+      op = credential.tag_values_client.delete_tag_value(name: tv.name)
+      op.wait_until_done!
     rescue Google::Cloud::NotFoundError
       # Already deleted
     end
+    op = credential.tag_keys_client.delete_tag_key(name: tag_key.name)
+    op.wait_until_done!
   rescue Google::Cloud::NotFoundError
-    # VPC or rules already gone
+    # Already deleted
   end
 
   def delete_vpc_network
@@ -295,13 +456,16 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     # Already deleted
   end
 
-  def subnet_allow_rule_name(direction)
-    # GCP firewall rule names max 63 chars; use short prefix + subnet ubid
-    "ubicloud-allow-#{direction}-#{private_subnet.ubid}"[0, 63]
-  end
+  # --- Shared helpers ---
 
   def subnet_tag
     "ps-#{private_subnet.ubid}"
+  end
+
+  # Deterministic priority for subnet allow rules. Each subnet gets a unique
+  # pair of priorities (IPv4 egress, IPv6 egress) based on a hash of its ubid.
+  def subnet_allow_priority
+    @subnet_allow_priority ||= ALLOW_SUBNET_BASE_PRIORITY + (private_subnet.ubid.hash.abs % 30000) * 2
   end
 
   def gcp_vpc_name
@@ -320,23 +484,16 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     @gcp_region ||= private_subnet.location.name.delete_prefix("gcp-")
   end
 
-  def verify_lro(op, resource_description)
-    # Don't block — check if operation returned an immediate error
-    return unless op.respond_to?(:error?) && op.error?
-
-    # LRO reported an error — check if the resource was created anyway
-    begin
-      yield
-      Clog.emit("GCP LRO error but resource exists",
-        {gcp_lro_recovered: {resource: resource_description, error: lro_error_message(op)}})
-    rescue Google::Cloud::NotFoundError
-      raise "GCP #{resource_description} creation failed: #{lro_error_message(op)}"
+  def wait_for_compute_global_op(op)
+    # Poll until done, with a short timeout for inline waits
+    return unless op.respond_to?(:name)
+    5.times do
+      result = credential.global_operations_client.get(
+        project: gcp_project_id,
+        operation: op.name
+      )
+      return if result.status == :DONE
+      sleep 1
     end
-  end
-
-  def lro_error_message(op)
-    err = op.error
-    return err.to_s unless err.respond_to?(:code)
-    "#{err.message} (code: #{err.code})"
   end
 end

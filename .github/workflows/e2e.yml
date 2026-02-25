@@ -379,6 +379,7 @@ jobs:
 
           require "json"
           require "google/cloud/compute/v1"
+          require "google/cloud/resource_manager/v3"
           require "google/cloud/storage"
           require "google/apis/iam_v1"
 
@@ -389,11 +390,33 @@ jobs:
           compute_config = proc { |c| c.credentials = authorizer; c.quota_project = project_id }
           instances_client = Google::Cloud::Compute::V1::Instances::Rest::Client.new(&compute_config)
           firewalls_client = Google::Cloud::Compute::V1::Firewalls::Rest::Client.new(&compute_config)
+          nfp_client = Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client.new(&compute_config)
           networks_client = Google::Cloud::Compute::V1::Networks::Rest::Client.new(&compute_config)
           subnetworks_client = Google::Cloud::Compute::V1::Subnetworks::Rest::Client.new(&compute_config)
           addresses_client = Google::Cloud::Compute::V1::Addresses::Rest::Client.new(&compute_config)
+
+          # Tag clients (gRPC)
+          grpc_creds = Google::Auth::ServiceAccountCredentials.make_creds(json_key_io: StringIO.new(creds_json), scope: scope)
+          tag_keys_client = Google::Cloud::ResourceManager::V3::TagKeys::Client.new { |c| c.credentials = grpc_creds }
+          tag_values_client = Google::Cloud::ResourceManager::V3::TagValues::Client.new { |c| c.credentials = grpc_creds }
+          tag_bindings_client = Google::Cloud::ResourceManager::V3::TagBindings::Client.new { |c| c.credentials = grpc_creds }
+
           zones = ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]
           regions = ["us-central1"]
+
+          puts "=== Cleaning up GCP tag bindings from instances ==="
+          zones.each do |zone|
+            instances_client.list(project: project_id, zone: zone).each do |inst|
+              parent = "//compute.googleapis.com/projects/#{project_id}/zones/#{zone}/instances/#{inst.name}"
+              tag_bindings_client.list_tag_bindings(parent: parent).each do |binding|
+                puts "Removing tag binding: #{binding.name} from #{inst.name}"
+                op = tag_bindings_client.delete_tag_binding(name: binding.name) rescue next
+                op.wait_until_done! rescue nil
+              end
+            rescue => e
+              puts "  Failed to clean tag bindings for #{inst.name}: #{e.message}"
+            end
+          end
 
           puts "=== Cleaning up GCP instances ==="
           zones.each do |zone|
@@ -403,7 +426,13 @@ jobs:
             end
           end
 
-          puts "=== Cleaning up GCP firewall rules ==="
+          puts "=== Cleaning up GCP network firewall policies ==="
+          nfp_client.list(project: project_id).select { |p| p.name&.start_with?("ubicloud-") }.each do |policy|
+            puts "Deleting network firewall policy: #{policy.name}"
+            nfp_client.delete(project: project_id, firewall_policy: policy.name) rescue puts "  Failed: #{$!.message}"
+          end
+
+          puts "=== Cleaning up GCP classic firewall rules (fallback) ==="
           firewalls_client.list(project: project_id).select { |fw| fw.name.start_with?("ubicloud-") }.each do |fw|
             puts "Deleting firewall rule: #{fw.name}"
             firewalls_client.delete(project: project_id, firewall: fw.name) rescue puts "  Failed: #{$!.message}"
@@ -421,6 +450,18 @@ jobs:
           networks_client.list(project: project_id).select { |n| n.name.start_with?("ubicloud-") }.each do |vpc|
             puts "Deleting VPC network: #{vpc.name}"
             networks_client.delete(project: project_id, network: vpc.name) rescue puts "  Failed: #{$!.message}"
+          end
+
+          puts "=== Cleaning up GCP tag keys and values ==="
+          tag_keys_client.list_tag_keys(parent: "projects/#{project_id}").select { |tk| tk.short_name.start_with?("ubicloud-") }.each do |tk|
+            puts "Cleaning tag key: #{tk.short_name}"
+            tag_values_client.list_tag_values(parent: tk.name).each do |tv|
+              puts "  Deleting tag value: #{tv.short_name}"
+              op = tag_values_client.delete_tag_value(name: tv.name) rescue next
+              op.wait_until_done! rescue nil
+            end
+            op = tag_keys_client.delete_tag_key(name: tk.name) rescue next
+            op.wait_until_done! rescue nil
           end
 
           puts "=== Cleaning up GCP static addresses ==="

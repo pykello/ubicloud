@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 
 RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   subject(:nx) { described_class.new(st) }
@@ -25,19 +26,33 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   let(:vpc_name) { "ubicloud-proj-#{project.ubid}" }
   let(:networks_client) { instance_double(Google::Cloud::Compute::V1::Networks::Rest::Client) }
   let(:subnetworks_client) { instance_double(Google::Cloud::Compute::V1::Subnetworks::Rest::Client) }
-  let(:firewalls_client) { instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client) }
+  let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
+  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
   let(:global_ops_client) { instance_double(Google::Cloud::Compute::V1::GlobalOperations::Rest::Client) }
   let(:region_ops_client) { instance_double(Google::Cloud::Compute::V1::RegionOperations::Rest::Client) }
 
   before do
     nx.instance_variable_set(:@private_subnet, ps)
-    allow(credential).to receive_messages(networks_client:, subnetworks_client:, firewalls_client:, global_operations_client: global_ops_client, region_operations_client: region_ops_client)
+    allow(credential).to receive_messages(
+      networks_client:, subnetworks_client:,
+      network_firewall_policies_client: nfp_client,
+      tag_keys_client:, tag_values_client:,
+      global_operations_client: global_ops_client,
+      region_operations_client: region_ops_client
+    )
     nx.instance_variable_set(:@credential, credential)
   end
 
   describe ".vpc_name" do
     it "returns ubicloud-proj-<ubid> for a project" do
       expect(described_class.vpc_name(project)).to eq(vpc_name)
+    end
+  end
+
+  describe ".tag_key_short_name" do
+    it "returns same as vpc_name" do
+      expect(described_class.tag_key_short_name(project)).to eq(vpc_name)
     end
   end
 
@@ -54,7 +69,7 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         network: vpc_name
       ).and_return(Google::Cloud::Compute::V1::Network.new(name: vpc_name))
 
-      expect { nx.create_vpc }.to hop("create_vpc_firewall_rules")
+      expect { nx.create_vpc }.to hop("create_firewall_policy")
     end
 
     it "creates VPC and hops to wait_create_vpc" do
@@ -89,10 +104,10 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect { nx.wait_create_vpc }.to nap(5)
     end
 
-    it "hops to create_vpc_firewall_rules when operation completes" do
+    it "hops to create_firewall_policy when operation completes" do
       op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
       expect(global_ops_client).to receive(:get).and_return(op)
-      expect { nx.wait_create_vpc }.to hop("create_vpc_firewall_rules")
+      expect { nx.wait_create_vpc }.to hop("create_firewall_policy")
     end
 
     it "raises if VPC creation fails" do
@@ -118,158 +133,173 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(networks_client).to receive(:get)
         .and_return(Google::Cloud::Compute::V1::Network.new(name: vpc_name))
 
-      expect { nx.wait_create_vpc }.to hop("create_vpc_firewall_rules")
+      expect { nx.wait_create_vpc }.to hop("create_firewall_policy")
     end
   end
 
-  describe "#create_vpc_firewall_rules" do
-    it "creates all deny rules (IPv4 and IPv6) when they do not exist" do
-      %w[deny-ingress deny-egress deny-ingress-ipv6 deny-egress-ipv6].each do |suffix|
-        expect(firewalls_client).to receive(:get)
-          .with(project: "test-gcp-project", firewall: "#{vpc_name}-#{suffix}")
-          .and_raise(Google::Cloud::NotFoundError.new("not found"))
+  describe "#create_firewall_policy" do
+    it "creates firewall policy if not exists and hops to create_tag_key" do
+      expect(nfp_client).to receive(:get)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-policy")
+      expect(nfp_client).to receive(:insert) do |args|
+        expect(args[:project]).to eq("test-gcp-project")
+        expect(args[:firewall_policy_resource].name).to eq(vpc_name)
+        op
       end
 
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      # verify_lro checks error? without blocking.exactly(4).times
+      done_op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(global_ops_client).to receive(:get).with(
+        project: "test-gcp-project", operation: "op-policy"
+      ).and_return(done_op)
+
+      assoc_op = instance_double(Gapic::GenericLRO::Operation, name: "op-assoc")
+      expect(nfp_client).to receive(:add_association) do |args|
+        expect(args[:firewall_policy]).to eq(vpc_name)
+        assoc = args[:firewall_policy_association_resource]
+        expect(assoc.attachment_target).to include(vpc_name)
+        assoc_op
+      end
+
+      expect(global_ops_client).to receive(:get).with(
+        project: "test-gcp-project", operation: "op-assoc"
+      ).and_return(done_op)
+
+      expect { nx.create_firewall_policy }.to hop("create_tag_key")
+    end
+
+    it "skips creation when firewall policy already exists" do
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name)
+      )
+      expect(nfp_client).not_to receive(:insert)
+
+      expect { nx.create_firewall_policy }.to hop("create_tag_key")
+    end
+  end
+
+  describe "#create_tag_key" do
+    let(:tag_key) {
+      Google::Cloud::ResourceManager::V3::TagKey.new(
+        name: "tagKeys/123456",
+        short_name: vpc_name
+      )
+    }
+    let(:tag_value) {
+      Google::Cloud::ResourceManager::V3::TagValue.new(
+        name: "tagValues/789",
+        short_name: "vm"
+      )
+    }
+
+    it "creates tag key and vm tag value when they don't exist" do
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .with(name: "test-gcp-project/#{vpc_name}")
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
+      expect(tag_keys_client).to receive(:create_tag_key) do |args|
+        expect(args[:tag_key].short_name).to eq(vpc_name)
+        expect(args[:tag_key].purpose).to eq(:GCE_FIREWALL)
+        expect(args[:tag_key].purpose_data["network"]).to include(vpc_name)
+        lro
+      end
+
+      # ensure_tag_value("vm") — tag key exists now, value doesn't
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .with(name: "test-gcp-project/#{vpc_name}")
+        .and_return(tag_key)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/vm")
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      expect(tag_values_client).to receive(:create_tag_value) do |args|
+        expect(args[:tag_value].parent).to eq("tagKeys/123456")
+        expect(args[:tag_value].short_name).to eq("vm")
+        lro
+      end
+
+      expect { nx.create_tag_key }.to hop("create_vpc_deny_rules")
+    end
+
+    it "skips creation when tag key and value already exist" do
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .with(name: "test-gcp-project/#{vpc_name}")
+        .and_return(tag_key)
+
+      # ensure_tag_value("vm")
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .with(name: "test-gcp-project/#{vpc_name}")
+        .and_return(tag_key)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/vm")
+        .and_return(tag_value)
+
+      expect(tag_keys_client).not_to receive(:create_tag_key)
+      expect(tag_values_client).not_to receive(:create_tag_value)
+
+      expect { nx.create_tag_key }.to hop("create_vpc_deny_rules")
+    end
+
+    it "raises when tag key creation fails" do
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      error_result = double("error", message: "quota exceeded") # rubocop:disable RSpec/VerifiedDoubles
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: true, error: error_result)
+      expect(tag_keys_client).to receive(:create_tag_key).and_return(lro)
+
+      expect { nx.create_tag_key }.to raise_error(RuntimeError, /Tag key creation failed/)
+    end
+  end
+
+  describe "#create_vpc_deny_rules" do
+    let(:vm_tag_value) {
+      Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/789", short_name: "vm")
+    }
+
+    before do
+      allow(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/vm")
+        .and_return(vm_tag_value)
+    end
+
+    it "creates 4 deny rules when they don't exist" do
+      expect(nfp_client).to receive(:get_rule).exactly(4).times
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
       created_rules = []
-      expect(firewalls_client).to receive(:insert).exactly(4).times do |args|
-        fw = args[:firewall_resource]
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-rule")
+      done_op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(global_ops_client).to receive(:get).exactly(4).times.and_return(done_op)
+
+      expect(nfp_client).to receive(:add_rule).exactly(4).times do |args|
+        rule = args[:firewall_policy_rule_resource]
         created_rules << {
-          name: fw.name,
-          direction: fw.direction,
-          priority: fw.priority,
-          target_tags: fw.target_tags.to_a,
-          denied: fw.denied.map(&:I_p_protocol)
+          priority: rule.priority,
+          direction: rule.direction,
+          action: rule.action,
+          target_tags: rule.target_secure_tags.map(&:name)
         }
         op
       end
 
-      expect { nx.create_vpc_firewall_rules }.to hop("create_subnet")
+      expect { nx.create_vpc_deny_rules }.to hop("create_subnet")
 
-      ingress_rule = created_rules.find { |r| r[:name] == "#{vpc_name}-deny-ingress" }
-      expect(ingress_rule[:direction]).to eq("INGRESS")
-      expect(ingress_rule[:priority]).to eq(65534)
-      expect(ingress_rule[:target_tags]).to eq(["ubicloud-vm"])
-      expect(ingress_rule[:denied]).to eq(["all"])
-
-      egress_rule = created_rules.find { |r| r[:name] == "#{vpc_name}-deny-egress" }
-      expect(egress_rule[:direction]).to eq("EGRESS")
-      expect(egress_rule[:priority]).to eq(65534)
-      expect(egress_rule[:target_tags]).to eq(["ubicloud-vm"])
-      expect(egress_rule[:denied]).to eq(["all"])
-
-      ingress_ipv6_rule = created_rules.find { |r| r[:name] == "#{vpc_name}-deny-ingress-ipv6" }
-      expect(ingress_ipv6_rule[:direction]).to eq("INGRESS")
-      expect(ingress_ipv6_rule[:priority]).to eq(65534)
-
-      egress_ipv6_rule = created_rules.find { |r| r[:name] == "#{vpc_name}-deny-egress-ipv6" }
-      expect(egress_ipv6_rule[:direction]).to eq("EGRESS")
-      expect(egress_ipv6_rule[:priority]).to eq(65534)
+      expect(created_rules.map { |r| r[:action] }).to all(eq("deny"))
+      expect(created_rules.map { |r| r[:target_tags] }).to all(eq(["tagValues/789"]))
+      directions = created_rules.map { |r| r[:direction] }
+      expect(directions.count("INGRESS")).to eq(2)
+      expect(directions.count("EGRESS")).to eq(2)
     end
 
     it "skips creation when deny rules already exist" do
-      %w[deny-ingress deny-egress deny-ingress-ipv6 deny-egress-ipv6].each do |suffix|
-        expect(firewalls_client).to receive(:get)
-          .with(project: "test-gcp-project", firewall: "#{vpc_name}-#{suffix}")
-          .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-#{suffix}"))
-      end
+      rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
+      expect(nfp_client).to receive(:get_rule).exactly(4).times.and_return(rule)
+      expect(nfp_client).not_to receive(:add_rule)
 
-      expect(firewalls_client).not_to receive(:insert)
-
-      expect { nx.create_vpc_firewall_rules }.to hop("create_subnet")
-    end
-
-    it "raises if deny rule creation fails" do
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-ingress")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-        .twice
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "operation failed")
-      # verify_lro checks error? without blocking
-      expect(firewalls_client).to receive(:insert).and_return(op)
-
-      expect { nx.create_vpc_firewall_rules }.to raise_error(RuntimeError, /firewall rule.*creation failed/)
-    end
-
-    it "sets correct source_ranges for IPv4 ingress deny rule" do
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-ingress")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-      # Other rules already exist
-      %w[deny-egress deny-ingress-ipv6 deny-egress-ipv6].each do |suffix|
-        expect(firewalls_client).to receive(:get)
-          .with(project: "test-gcp-project", firewall: "#{vpc_name}-#{suffix}")
-          .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-#{suffix}"))
-      end
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      # verify_lro checks error? without blocking
-
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.source_ranges.to_a).to eq(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
-        expect(fw.destination_ranges.to_a).to be_empty
-        op
-      end
-
-      expect { nx.create_vpc_firewall_rules }.to hop("create_subnet")
-    end
-
-    it "sets correct destination_ranges for IPv4 egress deny rule" do
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-ingress")
-        .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-deny-ingress"))
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-egress")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-      # IPv6 rules already exist
-      %w[deny-ingress-ipv6 deny-egress-ipv6].each do |suffix|
-        expect(firewalls_client).to receive(:get)
-          .with(project: "test-gcp-project", firewall: "#{vpc_name}-#{suffix}")
-          .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-#{suffix}"))
-      end
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      # verify_lro checks error? without blocking
-
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.destination_ranges.to_a).to eq(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"])
-        expect(fw.source_ranges.to_a).to be_empty
-        op
-      end
-
-      expect { nx.create_vpc_firewall_rules }.to hop("create_subnet")
-    end
-
-    it "sets correct source_ranges for IPv6 ingress deny rule" do
-      # IPv4 rules already exist
-      %w[deny-ingress deny-egress].each do |suffix|
-        expect(firewalls_client).to receive(:get)
-          .with(project: "test-gcp-project", firewall: "#{vpc_name}-#{suffix}")
-          .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-#{suffix}"))
-      end
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-ingress-ipv6")
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect(firewalls_client).to receive(:get)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-egress-ipv6")
-        .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-deny-egress-ipv6"))
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      # verify_lro checks error? without blocking
-
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.source_ranges.to_a).to eq(["fd20::/20"])
-        expect(fw.destination_ranges.to_a).to be_empty
-        op
-      end
-
-      expect { nx.create_vpc_firewall_rules }.to hop("create_subnet")
+      expect { nx.create_vpc_deny_rules }.to hop("create_subnet")
     end
   end
 
@@ -356,35 +386,94 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   end
 
   describe "#create_subnet_allow_rules" do
-    it "creates IPv4 and IPv6 egress allow rules for the subnet" do
-      # Both rules already exist
-      expect(firewalls_client).to receive(:get).twice
-        .and_return(Google::Cloud::Compute::V1::Firewall.new)
-      expect(firewalls_client).not_to receive(:insert)
+    let(:subnet_tag_value) {
+      Google::Cloud::ResourceManager::V3::TagValue.new(
+        name: "tagValues/456",
+        short_name: "ps-#{ps.ubid}"
+      )
+    }
+    let(:tag_key) {
+      Google::Cloud::ResourceManager::V3::TagKey.new(
+        name: "tagKeys/123456",
+        short_name: vpc_name
+      )
+    }
 
-      expect { nx.create_subnet_allow_rules }.to hop("wait")
+    before do
+      # ensure_tag_value for subnet tag
+      allow(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .with(name: "test-gcp-project/#{vpc_name}")
+        .and_return(tag_key)
     end
 
-    it "creates IPv4 and IPv6 allow rules when they don't exist" do
-      expect(firewalls_client).to receive(:get).twice
+    it "creates subnet tag value and IPv4+IPv6 egress allow rules" do
+      # ensure_tag_value — tag value exists
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
+        .and_return(subnet_tag_value)
+
+      # resolve_tag_value_name
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
+        .and_return(subnet_tag_value)
+
+      # Two policy rules (IPv4 egress + IPv6 egress), both new
+      expect(nfp_client).to receive(:get_rule).twice
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-rule")
+      done_op = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(global_ops_client).to receive(:get).twice.and_return(done_op)
+
       created_rules = []
-      expect(firewalls_client).to receive(:insert).twice do |args|
-        fw = args[:firewall_resource]
-        created_rules << {name: fw.name, direction: fw.direction, priority: fw.priority,
-                          target_tags: fw.target_tags.to_a}
+      expect(nfp_client).to receive(:add_rule).twice do |args|
+        rule = args[:firewall_policy_rule_resource]
+        created_rules << {
+          direction: rule.direction,
+          action: rule.action,
+          target_tags: rule.target_secure_tags.map(&:name)
+        }
         op
       end
 
       expect { nx.create_subnet_allow_rules }.to hop("wait")
 
-      created_rules.each do |r|
-        expect(r[:direction]).to eq("EGRESS")
-        expect(r[:priority]).to eq(1000)
-        expect(r[:target_tags]).to eq(["ps-#{ps.ubid}"])
-      end
+      expect(created_rules).to all(include(direction: "EGRESS", action: "allow"))
+      expect(created_rules.map { |r| r[:target_tags] }).to all(eq(["tagValues/456"]))
+    end
+
+    it "skips creation when rules already exist" do
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
+        .and_return(subnet_tag_value)
+        .at_least(:once)
+
+      rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
+      expect(nfp_client).to receive(:get_rule).twice.and_return(rule)
+      expect(nfp_client).not_to receive(:add_rule)
+
+      expect { nx.create_subnet_allow_rules }.to hop("wait")
+    end
+
+    it "creates tag value when it doesn't exist" do
+      # First call: tag_key exists, tag_value doesn't
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
+      expect(tag_values_client).to receive(:create_tag_value).and_return(lro)
+
+      # resolve_tag_value_name
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(name: "test-gcp-project/#{vpc_name}/ps-#{ps.ubid}")
+        .and_return(subnet_tag_value)
+
+      # Rules already exist
+      rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new
+      expect(nfp_client).to receive(:get_rule).twice.and_return(rule)
+
+      expect { nx.create_subnet_allow_rules }.to hop("wait")
     end
   end
 
@@ -414,15 +503,27 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
   end
 
   describe "#destroy" do
-    it "destroys the subnet and GCP subnet when no nics or load balancers remain" do
+    it "destroys the subnet and GCP resources when no nics or load balancers remain" do
       expect(ps).to receive(:nics).and_return([]).at_least(:once)
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
+
+      # delete_subnet_tag_value
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_return(Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/456"))
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil)
+      expect(tag_values_client).to receive(:delete_tag_value).and_return(lro)
+
+      # delete_subnet_policy_rules
+      expect(nfp_client).to receive(:remove_rule).twice
+
+      # delete_gcp_subnet
       expect(subnetworks_client).to receive(:delete).with(
         project: "test-gcp-project",
         region: "us-central1",
         subnetwork: "ubicloud-#{ps.ubid}"
       )
+
       expect(nx).to receive(:maybe_delete_vpc)
       expect(ps).to receive(:destroy)
       expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
@@ -432,6 +533,15 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:nics).and_return([]).at_least(:once)
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
+
+      # delete_subnet_tag_value — already deleted
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      # delete_subnet_policy_rules — already deleted
+      expect(nfp_client).to receive(:remove_rule).twice
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
       expect(subnetworks_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect(nx).to receive(:maybe_delete_vpc)
       expect(ps).to receive(:destroy)
@@ -442,6 +552,12 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:nics).and_return([]).at_least(:once)
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
+
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(nfp_client).to receive(:remove_rule).twice
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
       expect(subnetworks_client).to receive(:delete).and_raise(
         Google::Cloud::InvalidArgumentError.new("The subnetwork resource is already being used by 'projects/test/instances/vm-1'")
       )
@@ -452,6 +568,12 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(ps).to receive(:nics).and_return([]).at_least(:once)
       expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
       expect(ps).to receive(:remove_all_firewalls)
+
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(nfp_client).to receive(:remove_rule).twice
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
       expect(subnetworks_client).to receive(:delete).and_raise(
         Google::Cloud::InvalidArgumentError.new("Invalid CIDR range")
       )
@@ -469,6 +591,24 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect(nx).to receive(:rand).with(5..10).and_return(7)
       expect { nx.destroy }.to nap(7)
     end
+
+    it "handles policy not found during rule cleanup" do
+      expect(ps).to receive(:nics).and_return([]).at_least(:once)
+      expect(ps).to receive(:load_balancers).and_return([]).at_least(:once)
+      expect(ps).to receive(:remove_all_firewalls)
+
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      # Both priority rules not found (inner rescue catches each one)
+      expect(nfp_client).to receive(:remove_rule).twice
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      expect(subnetworks_client).to receive(:delete)
+      expect(nx).to receive(:maybe_delete_vpc)
+      expect(ps).to receive(:destroy)
+      expect { nx.destroy }.to exit({"msg" => "subnet destroyed"})
+    end
   end
 
   describe "#maybe_delete_vpc" do
@@ -483,18 +623,23 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       allow(ps).to receive(:project).and_return(project)
     end
 
-    it "deletes VPC and firewall rules when no other GCP subnets remain in project" do
+    it "deletes firewall policy, tag key, and VPC when no other GCP subnets remain" do
       allow(ps_dataset).to receive(:count).and_return(0)
 
-      deny_ingress = Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-deny-ingress")
-      deny_egress = Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-deny-egress")
-      expect(firewalls_client).to receive(:list).and_return([deny_ingress, deny_egress])
+      # delete_firewall_policy
+      expect(nfp_client).to receive(:delete)
+        .with(project: "test-gcp-project", firewall_policy: vpc_name)
 
-      expect(firewalls_client).to receive(:delete)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-ingress")
-      expect(firewalls_client).to receive(:delete)
-        .with(project: "test-gcp-project", firewall: "#{vpc_name}-deny-egress")
+      # delete_tag_key
+      tag_key = Google::Cloud::ResourceManager::V3::TagKey.new(name: "tagKeys/123")
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key).and_return(tag_key)
+      vm_tv = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/789")
+      expect(tag_values_client).to receive(:list_tag_values).and_return([vm_tv])
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil)
+      expect(tag_values_client).to receive(:delete_tag_value).with(name: "tagValues/789").and_return(lro)
+      expect(tag_keys_client).to receive(:delete_tag_key).with(name: "tagKeys/123").and_return(lro)
 
+      # delete_vpc_network
       expect(networks_client).to receive(:delete)
         .with(project: "test-gcp-project", network: vpc_name)
 
@@ -504,120 +649,50 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
     it "does not delete VPC when other GCP subnets remain in project" do
       allow(ps_dataset).to receive(:count).and_return(1)
 
-      expect(firewalls_client).not_to receive(:list)
-      expect(firewalls_client).not_to receive(:delete)
+      expect(nfp_client).not_to receive(:delete)
+      expect(tag_keys_client).not_to receive(:delete_tag_key)
       expect(networks_client).not_to receive(:delete)
 
       nx.send(:maybe_delete_vpc)
     end
 
-    it "handles already-deleted VPC gracefully" do
+    it "handles already-deleted resources gracefully" do
       allow(ps_dataset).to receive(:count).and_return(0)
 
-      expect(firewalls_client).to receive(:list)
+      expect(nfp_client).to receive(:delete)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect(networks_client).to receive(:delete)
         .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
       nx.send(:maybe_delete_vpc)
     end
-
-    it "handles already-deleted firewall rules during list iteration" do
-      allow(ps_dataset).to receive(:count).and_return(0)
-
-      rule = Google::Cloud::Compute::V1::Firewall.new(name: "#{vpc_name}-deny-ingress")
-      expect(firewalls_client).to receive(:list).and_return([rule])
-      expect(firewalls_client).to receive(:delete)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      expect(networks_client).to receive(:delete)
-        .with(project: "test-gcp-project", network: vpc_name)
-
-      nx.send(:maybe_delete_vpc)
-    end
   end
 
-  describe "#verify_lro" do
-    it "does nothing when operation has no error? method" do
-      op = double("op") # rubocop:disable RSpec/VerifiedDoubles
-      expect { nx.send(:verify_lro, op, "test resource") {} }.not_to raise_error
+  describe "#wait_for_compute_global_op" do
+    it "polls until done" do
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-test")
+      done = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+      expect(global_ops_client).to receive(:get).and_return(done)
+
+      nx.send(:wait_for_compute_global_op, op)
     end
 
-    it "does nothing when operation has no error" do
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      expect { nx.send(:verify_lro, op, "test resource") {} }.not_to raise_error
+    it "polls multiple times if not done" do
+      op = instance_double(Gapic::GenericLRO::Operation, name: "op-test")
+      running = Google::Cloud::Compute::V1::Operation.new(status: :RUNNING)
+      done = Google::Cloud::Compute::V1::Operation.new(status: :DONE)
+
+      expect(global_ops_client).to receive(:get).and_return(running, done)
+      allow(nx).to receive(:sleep)
+
+      nx.send(:wait_for_compute_global_op, op)
     end
 
-    it "recovers when operation has error but resource exists" do
-      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "error msg")
-      expect(Clog).to receive(:emit)
-      nx.send(:verify_lro, op, "test resource") { "resource exists" }
-    end
-
-    it "raises when operation has error and resource does not exist" do
-      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "error msg")
-      expect {
-        nx.send(:verify_lro, op, "test resource") { raise Google::Cloud::NotFoundError.new("not found") }
-      }.to raise_error(RuntimeError, /GCP test resource creation failed/)
-    end
-  end
-
-  describe "#ensure_allow_rule" do
-    it "sets source_ranges when provided" do
-      expect(firewalls_client).to receive(:get)
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: false)
-      expect(firewalls_client).to receive(:insert) do |args|
-        fw = args[:firewall_resource]
-        expect(fw.source_ranges.to_a).to eq(["10.0.0.0/26"])
-        expect(fw.destination_ranges.to_a).to be_empty
-        op
-      end
-
-      nx.send(:ensure_allow_rule,
-        name: "test-ingress-rule",
-        direction: "INGRESS",
-        source_ranges: ["10.0.0.0/26"],
-        destination_ranges: nil,
-        allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")])
-    end
-
-    it "invokes recovery block when LRO has error" do
-      expect(firewalls_client).to receive(:get)
-        .with(hash_including(firewall: "test-allow-rule"))
-        .and_raise(Google::Cloud::NotFoundError.new("not found"))
-
-      op = instance_double(Gapic::GenericLRO::Operation, error?: true, error: "transient error")
-      expect(firewalls_client).to receive(:insert).and_return(op)
-
-      # verify_lro will call the recovery block which calls firewalls_client.get again
-      expect(firewalls_client).to receive(:get)
-        .with(hash_including(firewall: "test-allow-rule"))
-        .and_return(Google::Cloud::Compute::V1::Firewall.new(name: "test-allow-rule"))
-      expect(Clog).to receive(:emit)
-
-      nx.send(:ensure_allow_rule,
-        name: "test-allow-rule",
-        direction: "EGRESS",
-        source_ranges: nil,
-        destination_ranges: ["10.0.0.0/26"],
-        allowed: [Google::Cloud::Compute::V1::Allowed.new(I_p_protocol: "all")])
+    it "handles non-operation objects" do
+      op = double("plain_op") # rubocop:disable RSpec/VerifiedDoubles
+      expect { nx.send(:wait_for_compute_global_op, op) }.not_to raise_error
     end
   end
-
-  # rubocop:disable RSpec/VerifiedDoubles
-  describe "#lro_error_message" do
-    it "returns string representation when error has no code method" do
-      op = double("op", error: "simple error")
-      expect(nx.send(:lro_error_message, op)).to eq("simple error")
-    end
-
-    it "returns formatted message with code when error has code" do
-      error = double("error", code: 500, message: "Internal error")
-      op = double("op", error:)
-      expect(nx.send(:lro_error_message, op)).to eq("Internal error (code: 500)")
-    end
-  end
-  # rubocop:enable RSpec/VerifiedDoubles
 end

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "google/cloud/compute/v1"
+require "google/cloud/resource_manager/v3"
 
 RSpec.describe Prog::Vm::Gcp::Nexus do
   subject(:nx) {
@@ -35,7 +36,10 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
   }
 
   let(:compute_client) { instance_double(Google::Cloud::Compute::V1::Instances::Rest::Client) }
-  let(:fw_client) { instance_double(Google::Cloud::Compute::V1::Firewalls::Rest::Client) }
+  let(:nfp_client) { instance_double(Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client) }
+  let(:tag_keys_client) { instance_double(Google::Cloud::ResourceManager::V3::TagKeys::Client) }
+  let(:tag_values_client) { instance_double(Google::Cloud::ResourceManager::V3::TagValues::Client) }
+  let(:tag_bindings_client) { instance_double(Google::Cloud::ResourceManager::V3::TagBindings::Client) }
   let(:zone_ops_client) { instance_double(Google::Cloud::Compute::V1::ZoneOperations::Rest::Client) }
 
   def ensure_nic_gcp_resource(nic, **overrides)
@@ -51,8 +55,12 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
   end
 
   before do
-    allow(location_credential).to receive_messages(compute_client:, firewalls_client: fw_client, zone_operations_client: zone_ops_client)
-    allow(fw_client).to receive(:list).and_return([])
+    allow(location_credential).to receive_messages(
+      compute_client:,
+      network_firewall_policies_client: nfp_client,
+      tag_keys_client:, tag_values_client:, tag_bindings_client:,
+      zone_operations_client: zone_ops_client
+    )
   end
 
   describe ".assemble" do
@@ -102,7 +110,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect { nx.start }.to nap(1)
     end
 
-    it "creates a dual-stack GCE instance and hops to wait_create_op" do
+    it "creates a GCE instance without tags and hops to wait_create_op" do
       nic = vm.nics.first
       nic.strand.update(label: "wait")
       ensure_nic_gcp_resource(nic)
@@ -113,6 +121,9 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
         expect(args[:instance_resource]).to be_a(Google::Cloud::Compute::V1::Instance)
         expect(args[:instance_resource].name).to eq("testvm")
         expect(args[:instance_resource].machine_type).to include("e2-standard-2")
+
+        # No classic tags should be set
+        expect(args[:instance_resource].tags).to be_nil
 
         ni = args[:instance_resource].network_interfaces.first
         expect(ni.network).to eq("projects/test-gcp-project/global/networks/ubicloud-proj-#{project.ubid}")
@@ -169,9 +180,6 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
         ps = nic.private_subnet
         expect(ni.network).to include(Prog::Vnet::Gcp::SubnetNexus.vpc_name(ps.project))
         expect(ni.subnetwork).to include("ubicloud-#{ps.ubid}")
-
-        tags = args[:instance_resource].tags.items
-        expect(tags).to include("ps-#{ps.ubid}")
         op
       end
 
@@ -233,8 +241,6 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       nic.strand.update(label: "wait")
       ensure_nic_gcp_resource(nic)
 
-      # VM is standard-2 (e2-standard-2), which is NOT LSSD.
-      # Add a data disk to confirm it gets attached.
       VmStorageVolume.create(vm_id: vm.id, boot: false, size_gib: 100, disk_index: 1)
 
       op = instance_double(Gapic::GenericLRO::Operation, name: "op-data-disk")
@@ -261,7 +267,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       op = instance_double(Gapic::GenericLRO::Operation, name: "op-lssd")
       expect(compute_client).to receive(:insert) do |args|
         disks = args[:instance_resource].disks
-        expect(disks.length).to eq(1) # Only boot disk, no persistent data disk
+        expect(disks.length).to eq(1)
         expect(disks[0].boot).to be true
         op
       end
@@ -373,7 +379,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
   end
 
   describe "#wait_instance_created" do
-    it "updates the vm with IPv4 and IPv6 when instance is RUNNING" do
+    it "updates the vm and hops to bind_tags when instance is RUNNING" do
       instance = Google::Cloud::Compute::V1::Instance.new(
         status: "RUNNING",
         network_interfaces: [
@@ -397,7 +403,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       now = Time.now.floor
       expect(Time).to receive(:now).at_least(:once).and_return(now)
 
-      expect { nx.wait_instance_created }.to hop("wait_sshable")
+      expect { nx.wait_instance_created }.to hop("bind_tags")
       vm.reload
       expect(vm.cores).to eq(1)
       expect(vm.allocated_at).to eq(now)
@@ -421,7 +427,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       )
 
       expect(compute_client).to receive(:get).and_return(instance)
-      expect { nx.wait_instance_created }.to hop("wait_sshable")
+      expect { nx.wait_instance_created }.to hop("bind_tags")
         .and change { vm.sshable.reload.host }.to("35.192.0.1")
     end
 
@@ -436,7 +442,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       now = Time.now.floor
       expect(Time).to receive(:now).at_least(:once).and_return(now)
 
-      expect { nx.wait_instance_created }.to hop("wait_sshable")
+      expect { nx.wait_instance_created }.to hop("bind_tags")
       vm.reload
       expect(vm.cores).to eq(1)
       expect(vm.assigned_vm_address).to be_nil
@@ -456,7 +462,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       now = Time.now.floor
       expect(Time).to receive(:now).at_least(:once).and_return(now)
 
-      expect { nx.wait_instance_created }.to hop("wait_sshable")
+      expect { nx.wait_instance_created }.to hop("bind_tags")
       vm.reload
       expect(vm.cores).to eq(1)
       expect(vm.assigned_vm_address).to be_nil
@@ -501,6 +507,106 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
       expect(compute_client).to receive(:get).and_return(instance)
       expect { nx.wait_instance_created }.to raise_error(RuntimeError, /GCE instance entered terminal state: SUSPENDED/)
+    end
+  end
+
+  describe "#bind_tags" do
+    let(:vm_tv) { Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/100", short_name: "vm") }
+    let(:subnet_tv) { Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/200", short_name: "ps-abc") }
+    let(:fwvm_tv) { Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/300", short_name: "fwvm-testvm") }
+    let(:tag_key) { Google::Cloud::ResourceManager::V3::TagKey.new(name: "tagKeys/999") }
+
+    it "binds secure tags to the instance and hops to wait_sshable" do
+      nic = vm.nics.first
+      ensure_nic_gcp_resource(nic)
+      nx.instance_variable_set(:@nic, nil)
+
+      # ensure_vm_tag_value: value exists
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /fwvm-testvm/))
+        .and_return(fwvm_tv)
+
+      # resolve_tag_value_name calls
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /\/vm$/))
+        .and_return(vm_tv)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /\/ps-/))
+        .and_return(subnet_tv)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /fwvm-testvm/))
+        .and_return(fwvm_tv)
+
+      # list_tag_bindings returns empty for all
+      expect(tag_bindings_client).to receive(:list_tag_bindings).exactly(3).times.and_return([])
+
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
+      expect(tag_bindings_client).to receive(:create_tag_binding).exactly(3).times.and_return(lro)
+
+      expect { nx.bind_tags }.to hop("wait_sshable")
+    end
+
+    it "skips already-bound tags" do
+      nic = vm.nics.first
+      ensure_nic_gcp_resource(nic)
+      nx.instance_variable_set(:@nic, nil)
+
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /fwvm-testvm/))
+        .and_return(fwvm_tv)
+
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /\/vm$/))
+        .and_return(vm_tv)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /\/ps-/))
+        .and_return(subnet_tv)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /fwvm-testvm/))
+        .and_return(fwvm_tv)
+
+      existing_binding = Google::Cloud::ResourceManager::V3::TagBinding.new(tag_value: "tagValues/100")
+      expect(tag_bindings_client).to receive(:list_tag_bindings)
+        .and_return([existing_binding])
+        .exactly(3).times
+
+      # Only 2 new bindings needed (subnet + fwvm), vm already bound
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
+      expect(tag_bindings_client).to receive(:create_tag_binding).twice.and_return(lro)
+
+      expect { nx.bind_tags }.to hop("wait_sshable")
+    end
+
+    it "handles tag binding errors gracefully" do
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::Error.new("permission denied"))
+      expect(Clog).to receive(:emit).with("Failed to bind secure tags", anything)
+
+      expect { nx.bind_tags }.to hop("wait_sshable")
+    end
+
+    it "creates VM tag value when it doesn't exist" do
+      nic = vm.nics.first
+      ensure_nic_gcp_resource(nic)
+      nx.instance_variable_set(:@nic, nil)
+
+      # ensure_vm_tag_value: value doesn't exist, create it
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .with(hash_including(name: /fwvm-testvm/))
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      expect(tag_keys_client).to receive(:get_namespaced_tag_key)
+        .and_return(tag_key)
+
+      lro = instance_double(Gapic::Operation, wait_until_done!: nil, error?: false)
+      expect(tag_values_client).to receive(:create_tag_value).and_return(lro)
+
+      # resolve + bind
+      expect(tag_values_client).to receive(:get_namespaced_tag_value).exactly(3).times.and_return(vm_tv)
+      expect(tag_bindings_client).to receive(:list_tag_bindings).exactly(3).times.and_return([])
+      expect(tag_bindings_client).to receive(:create_tag_binding).exactly(3).times.and_return(lro)
+
+      expect { nx.bind_tags }.to hop("wait_sshable")
     end
   end
 
@@ -607,6 +713,9 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
     end
 
     it "deletes the GCE instance and hops to wait_destroy_op" do
+      # cleanup_vm_firewall_resources
+      expect(nx).to receive(:cleanup_vm_firewall_resources)
+
       op = instance_double(Gapic::GenericLRO::Operation, name: "op-del-123")
       expect(compute_client).to receive(:delete).with(
         project: "test-gcp-project",
@@ -619,6 +728,7 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
     end
 
     it "handles already-deleted instances by hopping to finalize_destroy" do
+      expect(nx).to receive(:cleanup_vm_firewall_resources)
       expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect { nx.destroy }.to hop("finalize_destroy")
     end
@@ -628,9 +738,10 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       st.modified!(:stack)
       st.save_changes
 
-      # Simulate NIC already destroyed
       nx.instance_variable_set(:@nic, nil)
       allow(vm).to receive(:nic).and_return(nil)
+
+      expect(nx).to receive(:cleanup_vm_firewall_resources)
 
       op = instance_double(Gapic::GenericLRO::Operation, name: "op-del-zone")
       expect(compute_client).to receive(:delete).with(
@@ -642,44 +753,131 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect { nx.destroy }.to hop("wait_destroy_op")
     end
 
-    it "cleans up GCE firewall rules before deleting instance" do
-      fw1 = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
-      fw2 = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw6-testvm")
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([fw1])
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([fw2])
-      expect(fw_client).to receive(:delete).with(project: "test-gcp-project", firewall: "ubicloud-fw-testvm")
-      expect(fw_client).to receive(:delete).with(project: "test-gcp-project", firewall: "ubicloud-fw6-testvm")
-
-      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect { nx.destroy }.to hop("finalize_destroy")
-    end
-
     it "handles firewall cleanup errors gracefully" do
-      expect(fw_client).to receive(:list).and_raise(Google::Cloud::Error.new("permission denied"))
-      expect(Clog).to receive(:emit).with("Failed to clean up GCE firewall rules", anything)
+      expect(nfp_client).to receive(:get)
+        .and_raise(Google::Cloud::Error.new("permission denied"))
+      allow(Clog).to receive(:emit).and_call_original
+      expect(Clog).to receive(:emit).with("Failed to clean up GCE firewall resources", anything)
 
       expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
       expect { nx.destroy }.to hop("finalize_destroy")
     end
+  end
 
-    it "handles already-deleted firewall rules during cleanup" do
-      fw = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-testvm")
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([fw])
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([])
-      expect(fw_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("already deleted"))
-
-      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect { nx.destroy }.to hop("finalize_destroy")
+  describe "#cleanup_vm_firewall_resources" do
+    before do
+      ensure_nic_gcp_resource(vm.nics.first)
     end
 
-    it "skips firewall rules that don't start with expected prefix" do
-      other_fw = Google::Cloud::Compute::V1::Firewall.new(name: "ubicloud-fw-othervm")
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw-testvm").and_return([other_fw])
-      expect(fw_client).to receive(:list).with(project: "test-gcp-project", filter: "name:ubicloud-fw6-testvm").and_return([])
-      expect(fw_client).not_to receive(:delete)
+    it "calls all three cleanup sub-methods" do
+      # cleanup_vm_policy_rules: policy not found, returns early
+      expect(nfp_client).to receive(:get)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
 
-      expect(compute_client).to receive(:delete).and_raise(Google::Cloud::NotFoundError.new("not found"))
-      expect { nx.destroy }.to hop("finalize_destroy")
+      # cleanup_tag_bindings: no bindings
+      expect(tag_bindings_client).to receive(:list_tag_bindings).and_return([])
+
+      # delete_vm_tag_value: not found
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      nx.send(:cleanup_vm_firewall_resources)
+    end
+  end
+
+  describe "#cleanup_vm_policy_rules" do
+    before do
+      ensure_nic_gcp_resource(vm.nics.first)
+    end
+
+    it "removes policy rules targeting this VM's tag" do
+      vm_tv = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/999")
+      expect(tag_values_client).to receive(:get_namespaced_tag_value).and_return(vm_tv)
+
+      matching_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 12345,
+        target_secure_tags: [
+          Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/999")
+        ]
+      )
+      other_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 54321,
+        target_secure_tags: [
+          Google::Cloud::Compute::V1::FirewallPolicyRuleSecureTag.new(name: "tagValues/111")
+        ]
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(rules: [matching_rule, other_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+      expect(nfp_client).to receive(:remove_rule).with(hash_including(priority: 12345))
+      expect(nfp_client).not_to receive(:remove_rule).with(hash_including(priority: 54321))
+
+      nx.send(:cleanup_vm_policy_rules)
+    end
+
+    it "returns when policy is not found" do
+      expect(nfp_client).to receive(:get)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(tag_values_client).not_to receive(:get_namespaced_tag_value)
+
+      nx.send(:cleanup_vm_policy_rules)
+    end
+
+    it "returns when tag value is not found" do
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(rules: [])
+      expect(nfp_client).to receive(:get).and_return(policy)
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(nfp_client).not_to receive(:remove_rule)
+
+      nx.send(:cleanup_vm_policy_rules)
+    end
+  end
+
+  describe "#cleanup_tag_bindings" do
+    before do
+      ensure_nic_gcp_resource(vm.nics.first)
+    end
+
+    it "deletes all tag bindings from the instance" do
+      binding1 = Google::Cloud::ResourceManager::V3::TagBinding.new(name: "tagBindings/b1")
+      binding2 = Google::Cloud::ResourceManager::V3::TagBinding.new(name: "tagBindings/b2")
+
+      expect(tag_bindings_client).to receive(:list_tag_bindings).and_return([binding1, binding2])
+      op1 = instance_double(Gapic::Operation)
+      op2 = instance_double(Gapic::Operation)
+      expect(tag_bindings_client).to receive(:delete_tag_binding).with(name: "tagBindings/b1").and_return(op1)
+      expect(tag_bindings_client).to receive(:delete_tag_binding).with(name: "tagBindings/b2").and_return(op2)
+      expect(op1).to receive(:wait_until_done!)
+      expect(op2).to receive(:wait_until_done!)
+
+      nx.send(:cleanup_tag_bindings)
+    end
+
+    it "handles already-deleted instance gracefully" do
+      expect(tag_bindings_client).to receive(:list_tag_bindings)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+
+      nx.send(:cleanup_tag_bindings)
+    end
+  end
+
+  describe "#delete_vm_tag_value" do
+    it "deletes the VM tag value" do
+      tv = Google::Cloud::ResourceManager::V3::TagValue.new(name: "tagValues/999")
+      expect(tag_values_client).to receive(:get_namespaced_tag_value).and_return(tv)
+      op = instance_double(Gapic::Operation)
+      expect(tag_values_client).to receive(:delete_tag_value).with(name: "tagValues/999").and_return(op)
+      expect(op).to receive(:wait_until_done!)
+
+      nx.send(:delete_vm_tag_value)
+    end
+
+    it "handles already-deleted tag value gracefully" do
+      expect(tag_values_client).to receive(:get_namespaced_tag_value)
+        .and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(tag_values_client).not_to receive(:delete_tag_value)
+
+      nx.send(:delete_vm_tag_value)
     end
   end
 
@@ -720,7 +918,6 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
     end
 
     it "skips NIC detach when NIC is nil" do
-      # Destroy NICs first so vm.nic returns nil
       vm.nics.each { |n|
         n.strand.destroy
         n.destroy
@@ -867,7 +1064,6 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
     end
 
     it "defaults to zone suffix 'a' when NIC is nil" do
-      # Destroy NICs so vm.nic returns nil
       vm.nics.each { |n|
         n.strand.destroy
         n.destroy
