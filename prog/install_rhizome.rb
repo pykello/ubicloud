@@ -37,8 +37,11 @@ class Prog::InstallRhizome < Prog::Base
         end
       end
 
+      hashes_json = JSON.generate(file_hash_map.sort.to_h)
+      digest = Digest::SHA256.hexdigest(hashes_json)[0, 24]
+      update_stack({"rhizome_digest" => digest})
       writer.add_file("hashes.json", 0o100755) do |tf|
-        tf.write file_hash_map.to_json
+        tf.write hashes_json
       end
     end
 
@@ -56,6 +59,20 @@ class Prog::InstallRhizome < Prog::Base
 
   label def validate
     sshable.cmd("common/bin/validate")
+    RhizomeInstallation.dataset.insert_conflict(
+      target: :id,
+      update: {
+        folder: frame["target_folder"],
+        commit: Config.git_commit_hash,
+        digest: frame["rhizome_digest"],
+        installed_at: Time.now
+      }
+    ).insert(
+      id: sshable.id,
+      folder: frame["target_folder"],
+      commit: Config.git_commit_hash,
+      digest: frame["rhizome_digest"]
+    )
 
     pop "installed rhizome"
   end
