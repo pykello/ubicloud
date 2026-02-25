@@ -717,6 +717,67 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
 
       nx.send(:cleanup_vm_policy_rules)
     end
+
+    it "returns when nic is nil" do
+      # Override nic method to return nil (||= can't cache nil)
+      allow(nx).to receive(:nic).and_return(nil)
+
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(rules: [])
+      expect(nfp_client).to receive(:get).and_return(policy)
+      expect(nfp_client).not_to receive(:remove_rule)
+
+      nx.send(:cleanup_vm_policy_rules)
+    end
+
+    it "skips non-INGRESS and non-allow rules" do
+      vm_ip = vm.nics.first.private_ipv4.network.to_s
+      vm_dest = "#{vm_ip}/32"
+
+      egress_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 11111,
+        direction: "EGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: [vm_dest]
+        )
+      )
+      deny_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 22222,
+        direction: "INGRESS",
+        action: "deny",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          dest_ip_ranges: [vm_dest]
+        )
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(rules: [egress_rule, deny_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+
+      expect(nfp_client).not_to receive(:remove_rule)
+      nx.send(:cleanup_vm_policy_rules)
+    end
+
+    it "skips rules with nil match or nil dest_ip_ranges" do
+      nil_match_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 33333,
+        direction: "INGRESS",
+        action: "allow"
+        # match is nil
+      )
+      nil_dest_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 44444,
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          src_ip_ranges: ["0.0.0.0/0"]
+          # dest_ip_ranges is nil
+        )
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(rules: [nil_match_rule, nil_dest_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+
+      expect(nfp_client).not_to receive(:remove_rule)
+      nx.send(:cleanup_vm_policy_rules)
+    end
   end
 
   describe "#wait_destroy_op" do

@@ -25,11 +25,10 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
     private_ipv4 = instance_double(NetAddr::IPv4Net)
     network = instance_double(NetAddr::IPv4, to_s: "10.0.0.1")
     allow(private_ipv4).to receive(:network).and_return(network)
-    allow(nic).to receive(:private_ipv4).and_return(private_ipv4)
     private_ipv6 = instance_double(NetAddr::IPv6Net)
     ipv6_network = instance_double(NetAddr::IPv6, to_s: "fd00::")
     allow(private_ipv6).to receive(:network).and_return(ipv6_network)
-    allow(nic).to receive(:private_ipv6).and_return(private_ipv6)
+    allow(nic).to receive_messages(private_ipv4:, private_ipv6:)
     allow(vm).to receive_messages(location:, nics: [nic])
   end
 
@@ -406,6 +405,98 @@ RSpec.describe Prog::Vnet::Gcp::UpdateFirewallRules do
       expect(nfp_client).to receive(:get).and_return(policy)
 
       # Should not try to delete the other VM's rule
+      expect(nfp_client).not_to receive(:remove_rule)
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "returns false from policy_rule_matches? when existing rule has nil match" do
+      existing = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 10000,
+        direction: "INGRESS",
+        action: "allow"
+        # match is nil
+      )
+      desired = {
+        priority: 10000,
+        source_ranges: ["0.0.0.0/0"],
+        dest_ip_range: vm_dest_ip_range,
+        layer4_configs: [{ip_protocol: "tcp", ports: ["5432"]}]
+      }
+      expect(nx.send(:policy_rule_matches?, existing, desired)).to be false
+    end
+
+    it "falls back to IPv4 dest when VM has no private IPv6" do
+      nic = instance_double(Nic)
+      private_ipv4 = instance_double(NetAddr::IPv4Net)
+      network = instance_double(NetAddr::IPv4, to_s: "10.0.0.1")
+      allow(private_ipv4).to receive(:network).and_return(network)
+      allow(nic).to receive_messages(private_ipv4:, private_ipv6: nil)
+      allow(vm).to receive(:nics).and_return([nic])
+      nx.instance_variable_set(:@vm_private_ip, nil)
+      nx.instance_variable_set(:@vm_private_ipv6, nil)
+
+      rules = [
+        instance_double(FirewallRule, ip6?: true, cidr: NetAddr::IPv6Net.parse("::/0"),
+          port_range: Sequel.pg_range(5432..5433), protocol: "tcp")
+      ]
+      expect(vm).to receive(:firewall_rules).and_return(rules)
+      expect(nfp_client).to receive(:get).and_return(empty_policy)
+
+      expect(nfp_client).to receive(:add_rule) do |args|
+        rule = args[:firewall_policy_rule_resource]
+        # Without IPv6, should fall back to IPv4 dest range
+        expect(rule.match.dest_ip_ranges).to eq(["10.0.0.1/32"])
+      end
+
+      expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
+    end
+
+    it "returns empty existing rules when VM has no private IP" do
+      nic = instance_double(Nic)
+      allow(nic).to receive_messages(private_ipv4: nil, private_ipv6: nil)
+      allow(vm).to receive(:nics).and_return([nic])
+      nx.instance_variable_set(:@vm_private_ip, nil)
+      nx.instance_variable_set(:@vm_private_ipv6, nil)
+
+      # With nil private IP, list_existing_vm_policy_rules returns []
+      result = nx.send(:list_existing_vm_policy_rules)
+      expect(result).to eq([])
+    end
+
+    it "handles VM with no nics for private IP and IPv6 lookups" do
+      allow(vm).to receive(:nics).and_return([])
+      nx.instance_variable_set(:@vm_private_ip, nil)
+      nx.instance_variable_set(:@vm_private_ipv6, nil)
+
+      # nics.first is nil, so &.private_ipv4 and &.private_ipv6 return nil
+      expect(nx.send(:vm_private_ip)).to be_nil
+      expect(nx.send(:vm_private_ipv6)).to be_nil
+      result = nx.send(:list_existing_vm_policy_rules)
+      expect(result).to eq([])
+    end
+
+    it "ignores rules with nil match or nil dest_ip_ranges when listing" do
+      expect(vm).to receive(:firewall_rules).and_return([])
+
+      nil_match_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 50001,
+        direction: "INGRESS",
+        action: "allow"
+        # match is nil
+      )
+      nil_dest_rule = Google::Cloud::Compute::V1::FirewallPolicyRule.new(
+        priority: 50002,
+        direction: "INGRESS",
+        action: "allow",
+        match: Google::Cloud::Compute::V1::FirewallPolicyRuleMatcher.new(
+          src_ip_ranges: ["0.0.0.0/0"]
+          # dest_ip_ranges is nil
+        )
+      )
+      policy = Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name, rules: [nil_match_rule, nil_dest_rule])
+      expect(nfp_client).to receive(:get).and_return(policy)
+
       expect(nfp_client).not_to receive(:remove_rule)
 
       expect { nx.update_firewall_rules }.to exit({"msg" => "firewall rule is added"})
