@@ -33,18 +33,22 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
         network: gcp_vpc_name
       )
     rescue Google::Cloud::NotFoundError
-      op = credential.networks_client.insert(
-        project: gcp_project_id,
-        network_resource: Google::Cloud::Compute::V1::Network.new(
-          name: gcp_vpc_name,
-          auto_create_subnetworks: false,
-          routing_config: Google::Cloud::Compute::V1::NetworkRoutingConfig.new(
-            routing_mode: "REGIONAL"
+      begin
+        op = credential.networks_client.insert(
+          project: gcp_project_id,
+          network_resource: Google::Cloud::Compute::V1::Network.new(
+            name: gcp_vpc_name,
+            auto_create_subnetworks: false,
+            routing_config: Google::Cloud::Compute::V1::NetworkRoutingConfig.new(
+              routing_mode: "REGIONAL"
+            )
           )
         )
-      )
-      save_gcp_op(op.name, "global")
-      hop_wait_create_vpc
+        save_gcp_op(op.name, "global")
+        hop_wait_create_vpc
+      rescue Google::Cloud::AlreadyExistsError
+        # Another strand created the VPC between our GET and INSERT
+      end
     end
 
     hop_create_firewall_policy
@@ -252,6 +256,10 @@ class Prog::Vnet::Gcp::SubnetNexus < Prog::Base
     end
   rescue Google::Cloud::AlreadyExistsError
     # Association already exists (race condition with concurrent strands)
+  rescue Google::Cloud::InvalidArgumentError => e
+    raise unless e.message.include?("already exists")
+    # GCP returns InvalidArgumentError (not AlreadyExistsError) when the
+    # association name is already taken — treat it the same way.
   end
 
   def ensure_policy_rule(priority:, direction:, action:, src_ip_ranges: nil, dest_ip_ranges: nil, layer4_configs: nil)

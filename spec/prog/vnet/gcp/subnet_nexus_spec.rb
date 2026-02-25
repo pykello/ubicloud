@@ -77,6 +77,14 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
       expect { nx.create_vpc }.to hop("wait_create_vpc")
       expect(st.stack.first["gcp_op_name"]).to eq("op-vpc-123")
     end
+
+    it "handles AlreadyExistsError on INSERT from concurrent strands" do
+      expect(networks_client).to receive(:get).and_raise(Google::Cloud::NotFoundError.new("not found"))
+      expect(networks_client).to receive(:insert)
+        .and_raise(Google::Cloud::AlreadyExistsError.new("already exists"))
+
+      expect { nx.create_vpc }.to hop("create_firewall_policy")
+    end
   end
 
   describe "#wait_create_vpc" do
@@ -199,6 +207,26 @@ RSpec.describe Prog::Vnet::Gcp::SubnetNexus do
         .and_raise(Google::Cloud::AlreadyExistsError.new("association exists"))
 
       expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
+    end
+
+    it "handles InvalidArgumentError with 'already exists' on association" do
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name)
+      )
+      expect(nfp_client).to receive(:add_association)
+        .and_raise(Google::Cloud::InvalidArgumentError.new("An association with that name already exists."))
+
+      expect { nx.create_firewall_policy }.to hop("create_vpc_deny_rules")
+    end
+
+    it "re-raises InvalidArgumentError when not about association already existing" do
+      expect(nfp_client).to receive(:get).and_return(
+        Google::Cloud::Compute::V1::FirewallPolicy.new(name: vpc_name)
+      )
+      expect(nfp_client).to receive(:add_association)
+        .and_raise(Google::Cloud::InvalidArgumentError.new("Invalid CIDR range"))
+
+      expect { nx.create_firewall_policy }.to raise_error(Google::Cloud::InvalidArgumentError, /Invalid CIDR/)
     end
   end
 

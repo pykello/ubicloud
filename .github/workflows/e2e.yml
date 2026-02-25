@@ -392,6 +392,7 @@ jobs:
           zone_ops_client = Google::Cloud::Compute::V1::ZoneOperations::Rest::Client.new(&compute_config)
           firewalls_client = Google::Cloud::Compute::V1::Firewalls::Rest::Client.new(&compute_config)
           nfp_client = Google::Cloud::Compute::V1::NetworkFirewallPolicies::Rest::Client.new(&compute_config)
+          global_ops_client = Google::Cloud::Compute::V1::GlobalOperations::Rest::Client.new(&compute_config)
           networks_client = Google::Cloud::Compute::V1::Networks::Rest::Client.new(&compute_config)
           subnetworks_client = Google::Cloud::Compute::V1::Subnetworks::Rest::Client.new(&compute_config)
           addresses_client = Google::Cloud::Compute::V1::Addresses::Rest::Client.new(&compute_config)
@@ -442,7 +443,17 @@ jobs:
           nfp_client.list(project: project_id).select { |p| p.name&.start_with?("ubicloud-") }.each do |policy|
             (policy.associations || []).each do |assoc|
               puts "Removing association: #{assoc.name} from policy #{policy.name}"
-              nfp_client.remove_association(project: project_id, firewall_policy: policy.name, name: assoc.name) rescue puts "  Failed: #{$!.message}"
+              begin
+                op = nfp_client.remove_association(project: project_id, firewall_policy: policy.name, name: assoc.name)
+                # Wait for the LRO to complete before deleting the policy
+                30.times do
+                  result = global_ops_client.get(project: project_id, operation: op.name)
+                  break if result.status == :DONE
+                  sleep 2
+                end
+              rescue => e
+                puts "  Failed: #{e.message}"
+              end
             end
             puts "Deleting network firewall policy: #{policy.name}"
             nfp_client.delete(project: project_id, firewall_policy: policy.name) rescue puts "  Failed: #{$!.message}"
