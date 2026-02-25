@@ -283,6 +283,13 @@ RSpec.describe Prog::Vm::Gcp::Nexus do
       expect { nx.wait_create_op }.to hop("wait_instance_created")
     end
 
+    it "hops to start when no operation is pending but zone_retries is set" do
+      st.stack.first["zone_retries"] = 1
+      st.modified!(:stack)
+      st.save_changes
+      expect { nx.wait_create_op }.to hop("start")
+    end
+
     it "naps when operation is still running" do
       st.stack.first["gcp_op_name"] = "op-123"
       st.stack.first["gcp_op_scope"] = "zone"

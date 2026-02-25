@@ -133,21 +133,28 @@ class Prog::Vm::Gcp::Nexus < Prog::Base
   end
 
   label def wait_create_op
-    if frame["gcp_op_name"]
-      op = poll_gcp_op
-      unless op.status == :DONE
-        nap 5
-      end
-      if op_error?(op)
-        error_code = op_error_code(op)
-        if %w[ZONE_RESOURCE_POOL_EXHAUSTED QUOTA_EXCEEDED].include?(error_code)
-          clear_gcp_op
-          retry_zone_capacity("GCE operation error: #{error_code}")
-        end
-        raise "GCE instance creation failed: #{op_error_message(op)}"
-      end
-      clear_gcp_op
+    unless frame["gcp_op_name"]
+      # No pending operation — either this is a fresh start after an
+      # AlreadyExistsError or we cleared the op after a zone-capacity
+      # failure.  In the latter case zone_retries is set, so hop back
+      # to start to re-attempt instance creation.
+      hop_start if frame["zone_retries"]
+      hop_wait_instance_created
     end
+
+    op = poll_gcp_op
+    unless op.status == :DONE
+      nap 5
+    end
+    if op_error?(op)
+      error_code = op_error_code(op)
+      if %w[ZONE_RESOURCE_POOL_EXHAUSTED QUOTA_EXCEEDED].include?(error_code)
+        clear_gcp_op
+        retry_zone_capacity("GCE operation error: #{error_code}")
+      end
+      raise "GCE instance creation failed: #{op_error_message(op)}"
+    end
+    clear_gcp_op
     hop_wait_instance_created
   end
 
