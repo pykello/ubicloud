@@ -412,6 +412,23 @@ RSpec.describe StorageVolume do
       expect(encrypted_vhost_sv).to receive(:vhost_backend_create_service_file)
       encrypted_vhost_sv.prep_vhost_backend(encryption_key, key_wrapping_secrets)
     end
+
+    it "rewrites secrets config and encrypts credential for encrypted v2" do
+      encryption_key = "encryption_key"
+      key_wrapping_secrets = "key_wrapping_secrets"
+      kek_data = "base64_kek_data"
+      expect(encrypted_vhost_v2_sv).to receive(:vhost_backend_create_config).with(encryption_key, key_wrapping_secrets)
+      expect(encrypted_vhost_v2_sv).to receive(:vhost_backend_create_metadata).with(key_wrapping_secrets)
+      expect(encrypted_vhost_v2_sv).to receive(:v2_secrets_toml)
+        .with(encryption_key, key_wrapping_secrets, kek_source_path: "/run/credentials/test-2-storage.service/kek")
+        .and_return("toml_content")
+      expect(encrypted_vhost_v2_sv).to receive(:write_config_file)
+        .with("/var/storage/test/2/vhost-backend-secrets.conf", "toml_content")
+      expect(encrypted_vhost_v2_sv).to receive(:vhost_backend_kek).with(key_wrapping_secrets).and_return(kek_data)
+      expect(encrypted_vhost_v2_sv).to receive(:encrypt_kek_credential).with(kek_data)
+      expect(encrypted_vhost_v2_sv).to receive(:vhost_backend_create_service_file)
+      encrypted_vhost_v2_sv.prep_vhost_backend(encryption_key, key_wrapping_secrets)
+    end
   end
 
   describe "#vhost_backend_create_config" do
@@ -582,9 +599,12 @@ RSpec.describe StorageVolume do
       unencrypted_vhost_sv.vhost_backend_create_service_file
     end
 
-    it "does not add --kek to service file for encrypted v2 config" do
+    it "does not add --kek but adds LoadCredentialEncrypted for encrypted v2 config" do
       service_file = "/etc/systemd/system/test-2-storage.service"
-      expect(File).to receive(:write).with(service_file, satisfy { |content| !content.include?("--kek") })
+      expect(File).to receive(:write).with(service_file, satisfy { |content|
+        !content.include?("--kek") &&
+          content.include?("LoadCredentialEncrypted=kek:/var/storage/test/2/kek.cred")
+      })
 
       encrypted_vhost_v2_sv.vhost_backend_create_service_file
     end
@@ -622,6 +642,25 @@ RSpec.describe StorageVolume do
       expect(unencrypted_vhost_sv).to receive(:r).with("systemctl", "stop", "test-2-storage.service")
       expect(unencrypted_vhost_sv).to receive(:r).with("systemctl", "start", "test-2-storage.service")
       unencrypted_vhost_sv.vhost_backend_start(nil)
+    end
+
+    it "uses systemd-creds for encrypted v2 vhost backend" do
+      algorithm = "aes-256-gcm"
+      cipher = OpenSSL::Cipher.new(algorithm)
+      key_wrapping_secrets = {
+        "algorithm" => algorithm,
+        "key" => Base64.encode64(cipher.random_key),
+        "init_vector" => Base64.encode64(cipher.random_iv),
+        "auth_data" => "Ubicloud-Test-Auth"
+      }
+      vhost_sock = "/var/storage/test/2/vhost.sock"
+      rpc_sock = "/var/storage/test/2/rpc.sock"
+      expect(encrypted_vhost_v2_sv).to receive(:rm_if_exists).with(vhost_sock)
+      expect(encrypted_vhost_v2_sv).to receive(:rm_if_exists).with(rpc_sock)
+      expect(encrypted_vhost_v2_sv).to receive(:r).with("systemctl", "stop", "test-2-storage.service")
+      expect(encrypted_vhost_v2_sv).to receive(:encrypt_kek_credential).with(key_wrapping_secrets["key"])
+      expect(encrypted_vhost_v2_sv).to receive(:r).with("systemctl", "start", "test-2-storage.service")
+      encrypted_vhost_v2_sv.vhost_backend_start(key_wrapping_secrets)
     end
   end
 

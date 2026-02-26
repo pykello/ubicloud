@@ -96,6 +96,15 @@ class StorageVolume
   def prep_vhost_backend(encryption_key, key_wrapping_secrets)
     vhost_backend_create_config(encryption_key, key_wrapping_secrets)
     vhost_backend_create_metadata(key_wrapping_secrets) if @image_path
+    if @encrypted && use_config_v2?
+      # Rewrite secrets config to use systemd credential path for the service.
+      # The initial config written by vhost_backend_create_config uses the
+      # kek.pipe path for init-metadata compatibility; now we overwrite it with
+      # the credential directory path that systemd will populate at service start.
+      write_config_file(sp.vhost_backend_secrets_config,
+        v2_secrets_toml(encryption_key, key_wrapping_secrets, kek_source_path: creds_kek_path))
+      encrypt_kek_credential(vhost_backend_kek(key_wrapping_secrets))
+    end
     vhost_backend_create_service_file
   end
 
@@ -183,6 +192,12 @@ class StorageVolume
       "--kek #{sp.kek_pipe}"
     end
 
+    # v2 encrypted uses systemd-creds: the KEK is encrypted at rest and
+    # decrypted by systemd into $CREDENTIALS_DIRECTORY/kek on each start.
+    load_cred = if @encrypted && use_config_v2?
+      "LoadCredentialEncrypted=kek:#{sp.kek_cred}"
+    end
+
     # systemd-analyze security result:
     # Overall exposure level for #{vhost_user_block_service}: 0.5 SAFE
     service_file_path = "/etc/systemd/system/#{vhost_user_block_service}"
@@ -195,6 +210,7 @@ class StorageVolume
         Slice=#{@slice}
         Environment=RUST_LOG=info
         Environment=RUST_BACKTRACE=1
+        #{load_cred}
         ExecStart=#{vhost_backend.bin_path} --config #{sp.vhost_backend_config} #{kek_arg}
         Restart=always
         User=#{@vm_name}
@@ -383,7 +399,7 @@ class StorageVolume
     toml_section("danger_zone", hash)
   end
 
-  def v2_secrets_toml(encryption_key, key_wrapping_secrets)
+  def v2_secrets_toml(encryption_key, key_wrapping_secrets, kek_source_path: sp.kek_pipe)
     kek_bytes = Base64.decode64(key_wrapping_secrets["key"])
     xts_plaintext = [encryption_key[:key]].pack("H*") + [encryption_key[:key2]].pack("H*")
     xts_key_name = "xts-key" # we use the key name as auth_data in aes256-gcm
@@ -398,7 +414,7 @@ class StorageVolume
     })
 
     secrets_kek_section = toml_section("secrets.kek", {
-      "source.file" => sp.kek_pipe,
+      "source.file" => kek_source_path,
       "encoding" => "base64"
     })
 
@@ -445,6 +461,16 @@ class StorageVolume
     h.default_proc = proc { |_, ch| format('\\u%04X', ch.ord) }
     escaped = value.gsub(/[\x00-\x08\x0A-\x1F\x7F"\\]/, h)
     "\"#{escaped}\""
+  end
+
+  def creds_kek_path
+    "/run/credentials/#{vhost_user_block_service}/kek"
+  end
+
+  def encrypt_kek_credential(kek_data)
+    cred_path = sp.kek_cred
+    rm_if_exists(cred_path)
+    r("systemd-creds encrypt --name=kek - #{cred_path.shellescape}", stdin: kek_data)
   end
 
   def vhost_backend_kek(key_wrapping_secrets)
@@ -509,9 +535,17 @@ class StorageVolume
       return
     end
 
-    with_kek_pipe do |kek_pipe|
+    if use_config_v2?
+      # Re-encrypt the KEK credential for this start. The encrypted file
+      # persists on disk and systemd decrypts it into $CREDENTIALS_DIRECTORY/kek
+      # each time the service starts (including automatic restarts).
+      encrypt_kek_credential(vhost_backend_kek(key_wrapping_secrets))
       r "systemctl", "start", vhost_user_block_service
-      write_kek_to_pipe(kek_pipe, vhost_backend_kek(key_wrapping_secrets))
+    else
+      with_kek_pipe do |kek_pipe|
+        r "systemctl", "start", vhost_user_block_service
+        write_kek_to_pipe(kek_pipe, vhost_backend_kek(key_wrapping_secrets))
+      end
     end
   end
 
