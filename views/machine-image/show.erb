@@ -1,0 +1,14 @@
+<% @page_title = @machine_image.name %>
+<% active_ver = @machine_image.active_version %>
+
+<%== part("object/show",
+  object: @machine_image,
+  tabs: [
+    ["Overview", "overview", "hero-squares-plus"],
+    ["Settings", "settings", "hero-cog-8-tooth"]
+  ],
+  type: "machine-image",
+  prefix: "machine-image",
+  breadcrumb_label: "Machine Images",
+  right_header: active_ver ? part("components/machine_image_state_label", state: active_ver.state, extra_class: "text-md") : ""
+) %>

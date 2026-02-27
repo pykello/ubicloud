@@ -1,0 +1,118 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require "fileutils"
+require_relative "../../common/lib/util"
+
+params = JSON.parse($stdin.read)
+
+archive_bin = params.fetch("archive_bin")
+device_config = params.fetch("device_config")
+vm_name = params.fetch("vm_name")
+encrypt = params.fetch("encrypt", false)
+
+# S3 target
+s3_bucket = params.fetch("s3_bucket")
+s3_prefix = params.fetch("s3_prefix")
+s3_region = params.fetch("s3_region")
+s3_endpoint = params.fetch("s3_endpoint")
+s3_connections = params.fetch("s3_connections", 16)
+
+# Credentials (plaintext, passed via stdin to archive binary)
+s3_key_id = params.fetch("s3_key_id")
+s3_secret_key = params.fetch("s3_secret_key")
+s3_session_token = params["s3_session_token"]
+
+# Archive KEK: base64-encoded 32-byte key, used when encrypt=true
+archive_kek = params["archive_kek"]
+
+# Disk KEK: optional, needed to decrypt encrypted source disks
+disk_kek = params["disk_kek"]
+
+# -- Build target config TOML with inline plaintext secrets --
+
+def toml_quote(s)
+  "\"#{s.gsub("\\", "\\\\\\\\").gsub("\"", "\\\"")}\""
+end
+
+# [target] section
+target_lines = []
+target_lines << "[target]"
+target_lines << "storage = \"s3\""
+target_lines << "bucket = #{toml_quote(s3_bucket)}"
+target_lines << "prefix = #{toml_quote(s3_prefix)}"
+target_lines << "region = #{toml_quote(s3_region)}"
+target_lines << "endpoint = #{toml_quote(s3_endpoint)}"
+target_lines << "connections = #{s3_connections}"
+target_lines << "access_key_id.ref = \"s3-key-id\""
+target_lines << "secret_access_key.ref = \"s3-secret-key\""
+target_lines << "session_token.ref = \"s3-session-token\"" if s3_session_token
+target_lines << "archive_kek.ref = \"archive-kek\"" if encrypt
+
+toml_parts = []
+toml_parts << target_lines.join("\n")
+
+# [secrets.*] sections -- plaintext inline secrets
+toml_parts << <<~TOML
+  [secrets.s3-key-id]
+  source.inline = #{toml_quote(s3_key_id)}
+TOML
+
+toml_parts << <<~TOML
+  [secrets.s3-secret-key]
+  source.inline = #{toml_quote(s3_secret_key)}
+TOML
+
+if s3_session_token
+  toml_parts << <<~TOML
+    [secrets.s3-session-token]
+    source.inline = #{toml_quote(s3_session_token)}
+  TOML
+end
+
+if encrypt && archive_kek
+  toml_parts << <<~TOML
+    [secrets.archive-kek]
+    source.inline = #{toml_quote(archive_kek)}
+    encoding = "base64"
+  TOML
+end
+
+# danger_zone: allow plaintext secrets in config
+toml_parts << <<~TOML
+  [danger_zone]
+  enabled = true
+  allow_inline_plaintext_secrets = true
+TOML
+
+target_config = toml_parts.join("\n")
+
+# Write target config to a temp file
+target_config_path = "/tmp/archive-target-#{vm_name}.toml"
+safe_write_to_file(target_config_path, target_config)
+
+# Disk KEK pipe -- needed to decrypt the source disk's XTS key
+pipe_threads = []
+disk_kek_pipe = nil
+if disk_kek
+  config_dir = File.dirname(device_config)
+  disk_kek_pipe = File.join(config_dir, "kek.pipe")
+  FileUtils.rm_f(disk_kek_pipe)
+  r "mkfifo -m 0600 #{disk_kek_pipe}"
+  pipe_threads << Thread.new { File.write(disk_kek_pipe, disk_kek) }
+end
+
+# Build and run archive command
+log_file = "/tmp/archive-#{vm_name}.log"
+cmd = "RUST_LOG=debug #{archive_bin} --config #{device_config} --target-config #{target_config_path} --compression zstd --zstd-level 3"
+cmd += " --encrypt" if encrypt
+cmd += " 2>#{log_file}"
+
+begin
+  r cmd
+ensure
+  FileUtils.rm_f(target_config_path)
+  FileUtils.rm_f(disk_kek_pipe) if disk_kek_pipe
+  pipe_threads.each { _1.join(5) }
+end

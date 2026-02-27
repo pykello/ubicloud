@@ -69,6 +69,10 @@ module ContentGenerator
     def self.boot_image(boot_image)
       Option::BootImages.find { it.name == boot_image }.display_name
     end
+
+    def self.machine_image(location, mi)
+      mi[:display_name]
+    end
   end
 
   module Postgres
@@ -205,6 +209,12 @@ module ContentGenerator
 
     def self.version(version)
       "Kubernetes #{version}"
+    end
+  end
+
+  module MachineImage
+    def self.vm(location, vm)
+      vm[:display_name]
     end
   end
 
