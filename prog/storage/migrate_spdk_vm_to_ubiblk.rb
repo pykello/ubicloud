@@ -16,6 +16,14 @@ class Prog::Storage::MigrateSpdkVmToUbiblk < Prog::Base
       fail "Vm is already using Ubiblk"
     end
 
+    unless vm.vm_storage_volumes.first.use_bdev_ubi
+      fail "Vm storage volume does not use bdev_ubi"
+    end
+
+    unless vm.vm_storage_volumes.first.key_encryption_key_1
+      fail "Vm storage volume is not encrypted"
+    end
+
     unless vm.vm_host.vhost_block_backends.find { |b| b.version == Config.vhost_block_backend_version }
       fail "VmHost does not have the right vhost block backend installed"
     end
