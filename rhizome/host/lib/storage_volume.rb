@@ -15,6 +15,7 @@ require_relative "spdk_rpc"
 require_relative "spdk_setup"
 require_relative "storage_key_encryption"
 require_relative "storage_path"
+require_relative "toml"
 require_relative "vhost_block_backend"
 
 KEK_PIPE_WRITE_TIMEOUT_SEC = 5
@@ -340,7 +341,7 @@ class StorageVolume
     includes << File.basename(sp.vhost_backend_stripe_source_config) if @image_path
     includes << File.basename(sp.vhost_backend_secrets_config) if @encrypted
     return "" if includes.empty?
-    items = includes.map { |f| toml_str(f) }.join(", ")
+    items = includes.map { |f| Toml.str(f) }.join(", ")
     "include = [#{items}]\n"
   end
 
@@ -352,7 +353,7 @@ class StorageVolume
       "device_id" => @device_id
     }
     hash["metadata_path"] = sp.vhost_backend_metadata if @image_path
-    toml_section("device", hash)
+    Toml.section("device", hash)
   end
 
   def v2_tuning_section
@@ -365,14 +366,14 @@ class StorageVolume
       "write_through" => write_through_device?,
       "cpus" => @cpus
     }
-    toml_section("tuning", hash.compact)
+    Toml.section("tuning", hash.compact)
   end
 
   def v2_encryption_section
     hash = {
       "xts_key.ref" => "xts-key"
     }
-    toml_section("encryption", hash)
+    Toml.section("encryption", hash)
   end
 
   def v2_danger_zone_section
@@ -380,7 +381,7 @@ class StorageVolume
       "enabled" => true,
       "allow_unencrypted_disk" => true
     }
-    toml_section("danger_zone", hash)
+    Toml.section("danger_zone", hash)
   end
 
   def v2_secrets_toml(encryption_key, key_wrapping_secrets)
@@ -391,13 +392,13 @@ class StorageVolume
       StorageKeyEncryption.aes256gcm_encrypt(kek_bytes, xts_key_name, xts_plaintext)
     )
 
-    secrets_xts_key_section = toml_section("secrets.#{xts_key_name}", {
+    secrets_xts_key_section = Toml.section("secrets.#{xts_key_name}", {
       "source.inline" => wrapped_xts_b64,
       "encoding" => "base64",
       "encrypted_by.ref" => "kek"
     })
 
-    secrets_kek_section = toml_section("secrets.kek", {
+    secrets_kek_section = Toml.section("secrets.kek", {
       "source.file" => sp.kek_pipe,
       "encoding" => "base64"
     })
@@ -411,40 +412,7 @@ class StorageVolume
       "image_path" => @image_path,
       "copy_on_read" => @copy_on_read
     }
-    toml_section("stripe_source", hash)
-  end
-
-  def toml_section(name, hash)
-    "[#{name}]\n#{hash.map { |k, v| "#{k} = #{toml_value(v)}" }.join("\n")}\n"
-  end
-
-  def toml_value(v)
-    case v
-    when String then toml_str(v)
-    when Array then "[#{v.map { |e| toml_value(e) }.join(", ")}]"
-    else v
-    end
-  end
-
-  def toml_str(value)
-    # From TOML specs:
-    # > Basic strings are surrounded by quotation marks ("). Any Unicode
-    # > character may be used except those that must be escaped: quotation mark,
-    # > backslash, and the control characters other than tab (U+0000 to U+0008,
-    # > U+000A to U+001F, U+007F).
-    #
-    # See https://toml.io/en/v1.0.0#string
-    h = {
-      "\b" => '\\b',
-      "\n" => '\\n',
-      "\f" => '\\f',
-      "\r" => '\\r',
-      '"' => '\\"',
-      "\\" => "\\\\"
-    }
-    h.default_proc = proc { |_, ch| format('\\u%04X', ch.ord) }
-    escaped = value.gsub(/[\x00-\x08\x0A-\x1F\x7F"\\]/, h)
-    "\"#{escaped}\""
+    Toml.section("stripe_source", hash)
   end
 
   def vhost_backend_kek(key_wrapping_secrets)
