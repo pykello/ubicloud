@@ -3,6 +3,7 @@
 require_relative "../lib/storage_key_encryption"
 require "openssl"
 require "base64"
+require "tmpdir"
 
 RSpec.describe StorageKeyEncryption do
   subject(:sek) {
@@ -108,6 +109,50 @@ RSpec.describe StorageKeyEncryption do
       read_key = sek.read_encrypted_dek("key-file")
       expect(read_key[:key]).to eq(dek[:key])
       expect(read_key[:key2]).to eq(dek[:key2])
+    end
+  end
+
+  describe "#run_with_kek_pipe" do
+    it "passes kek via pipe; with stdin" do
+      Dir.mktmpdir do |dir|
+        output_file = File.join(dir, "output-with-stdin")
+        kek_pipe = File.join(dir, "kek.pipe")
+        script = <<~RUBY
+          kek = File.read(ARGV[0])
+          stdin = STDIN.read
+          File.write(ARGV[1], [ENV.fetch("TEST_KEK_ENV"), kek, stdin].join("|"))
+        RUBY
+
+        run_with_kek_pipe(
+          ["ruby", "-e", script, kek_pipe, output_file],
+          kek_pipe: kek_pipe,
+          kek_content: "kek-content-with-stdin",
+          stdin: "stdin-payload",
+          env: {"TEST_KEK_ENV" => "env-with-stdin"}
+        )
+
+        expect(File.read(output_file)).to eq("env-with-stdin|kek-content-with-stdin|stdin-payload")
+      end
+    end
+
+    it "passes kek via pipe; without stdin" do
+      Dir.mktmpdir do |dir|
+        output_file = File.join(dir, "output-without-stdin")
+        kek_pipe = File.join(dir, "kek.pipe")
+        script = <<~RUBY
+          kek = File.read(ARGV[0])
+          File.write(ARGV[1], [ENV.fetch("TEST_KEK_ENV"), kek].join("|"))
+        RUBY
+
+        run_with_kek_pipe(
+          ["ruby", "-e", script, kek_pipe, output_file],
+          kek_pipe: kek_pipe,
+          kek_content: "kek-content-without-stdin",
+          env: {"TEST_KEK_ENV" => "env-without-stdin"}
+        )
+
+        expect(File.read(output_file)).to eq("env-without-stdin|kek-content-without-stdin")
+      end
     end
   end
 end
