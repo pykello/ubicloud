@@ -2,6 +2,19 @@
 
 Sequel.migration do
   change do
+    create_table(:object_store) do
+      column :id, :uuid, primary_key: true
+      column :created_at, :timestamptz, null: false, default: Sequel::CURRENT_TIMESTAMP
+      column :name, :text, collate: '"C"', null: false, unique: true
+      column :url, :text, collate: '"C"', null: false
+      column :access_key, :text, null: false
+      column :secret_key, :text, null: false
+      # Cloudflare R2 specific: account_id and api_token for temp credential generation.
+      # Null for non-Cloudflare S3-compatible stores.
+      column :cf_account_id, :text, collate: '"C"'
+      column :cf_api_token, :text
+    end
+
     create_table(:machine_image) do
       column :id, :uuid, primary_key: true
       column :created_at, :timestamptz, null: false, default: Sequel::CURRENT_TIMESTAMP
@@ -32,7 +45,7 @@ Sequel.migration do
 
     create_table(:machine_image_version_metal) do
       foreign_key :id, :machine_image_version, type: :uuid, primary_key: true
-      column :s3_endpoint, :text, collate: '"C"', null: false
+      foreign_key :object_store_id, :object_store, type: :uuid, null: false
       column :s3_bucket, :text, collate: '"C"', null: false
       column :s3_prefix, :text, collate: '"C"', null: false
       foreign_key :key_encryption_key_1_id, :storage_key_encryption_key, type: :uuid, null: false

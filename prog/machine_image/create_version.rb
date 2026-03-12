@@ -1,12 +1,11 @@
 # frozen_string_literal: true
 
-require "aws-sdk-s3"
 require "json"
 
 class Prog::MachineImage::CreateVersion < Prog::Base
   subject_is :machine_image_version
 
-  def self.assemble(machine_image, version, source_vm, destroy_source_after: false)
+  def self.assemble(machine_image, version, source_vm, object_store, bucket:, destroy_source_after: false)
     fail "source vm must have only one storage volume" unless source_vm.vm_storage_volumes.count == 1
     fail "source vm must be stopped" unless source_vm.display_state == "stopped"
 
@@ -24,8 +23,8 @@ class Prog::MachineImage::CreateVersion < Prog::Base
     )
 
     MachineImageVersionMetal.create_with_id(mi_version,
-      s3_endpoint: r2_endpoint_url(machine_image.location.name),
-      s3_bucket: Config.machine_image_r2_bucket,
+      object_store_id: object_store.id,
+      s3_bucket: bucket,
       s3_prefix:,
       key_encryption_key_1_id: key_encryption_key.id
     )
@@ -39,14 +38,6 @@ class Prog::MachineImage::CreateVersion < Prog::Base
         "destroy_source_after" => destroy_source_after
       }]
     ) { it.id = mi_version.id }
-  end
-
-  def self.r2_endpoint_url(location)
-    if location.start_with?("us-")
-      "https://#{Config.machine_image_r2_account_id}.r2.cloudflarestorage.com"
-    else
-      "https://#{Config.machine_image_r2_account_id}.eu.r2.cloudflarestorage.com"
-    end
   end
 
   label def archive
@@ -81,20 +72,14 @@ class Prog::MachineImage::CreateVersion < Prog::Base
   end
 
   def archive_params_json
+    metal = machine_image_version.metal
+    object_store = metal.object_store
+
     # We use temporary credentials for operations done in the VM hosts.
-    cloudflare_client = CloudflareClient.new(Config.machine_image_r2_api_token)
-    creds = cloudflare_client.generate_temp_credentials(
-      account_id: Config.machine_image_r2_account_id,
-      parent_access_key_id: Config.machine_image_r2_access_key,
-      bucket: Config.machine_image_r2_bucket,
-      permission: "object-read-write",
-      ttl_seconds: 86400
-    )
+    creds = object_store.generate_temp_credentials(bucket: metal.s3_bucket)
 
     source_vm = Vm[frame["source_vm_id"]]
     sv = source_vm.vm_storage_volumes.first
-
-    metal = machine_image_version.metal
 
     {
       vm_name: source_vm.inhost_name,
@@ -103,7 +88,7 @@ class Prog::MachineImage::CreateVersion < Prog::Base
       vhost_block_backend_version: sv.vhost_block_backend.version,
       kek: sv.key_encryption_key_1.secret_key_material_hash,
       target_conf: {
-        endpoint: metal.s3_endpoint,
+        endpoint: object_store.url,
         region: "auto",
         bucket: metal.s3_bucket,
         prefix: metal.s3_prefix,
@@ -117,16 +102,10 @@ class Prog::MachineImage::CreateVersion < Prog::Base
 
   def archive_size_bytes
     metal = machine_image_version.metal
-
-    s3 = Aws::S3::Client.new(
-      region: "auto",
-      endpoint: metal.s3_endpoint,
-      access_key_id: Config.machine_image_r2_access_key,
-      secret_access_key: Config.machine_image_r2_secret_key
-    )
+    object_store = metal.object_store
 
     total = 0
-    s3.list_objects_v2(bucket: metal.s3_bucket, prefix: metal.s3_prefix).each do |page|
+    object_store.s3_client.list_objects_v2(bucket: metal.s3_bucket, prefix: metal.s3_prefix).each do |page|
       total += page.contents.sum(&:size)
     end
     total

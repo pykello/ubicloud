@@ -23,6 +23,16 @@ RSpec.describe Prog::MachineImage::CreateVersion do
   let(:source_vol) { source_vm.vm_storage_volumes.first }
   let(:source_kek) { source_vol.key_encryption_key_1 }
   let(:machine_image) { MachineImage.create(name: "test-image", arch: "x64", project_id: project.id, location_id: Location[Location::HETZNER_FSN1_ID].id) }
+  let(:object_store) {
+    ObjectStore.create(
+      name: "test-r2-store",
+      url: "https://test-account.eu.r2.cloudflarestorage.com",
+      access_key: "test-access-key",
+      secret_key: "test-secret-key",
+      cf_account_id: "test-account",
+      cf_api_token: "test-api-token"
+    )
+  }
   let(:mi_version) {
     v = MachineImageVersion.create(
       machine_image_id: machine_image.id,
@@ -31,7 +41,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       actual_size_mib: 5120
     )
     MachineImageVersionMetal.create_with_id(v,
-      s3_endpoint: "https://test-account.eu.r2.cloudflarestorage.com",
+      object_store_id: object_store.id,
       s3_bucket: "test-bucket",
       s3_prefix: "#{project.ubid}/#{machine_image.ubid}/1.0",
       key_encryption_key_1_id: StorageKeyEncryptionKey.create_random(auth_data: "target-kek").id
@@ -53,7 +63,6 @@ RSpec.describe Prog::MachineImage::CreateVersion do
 
   before do
     source_vm
-    allow(Config).to receive_messages(machine_image_r2_bucket: "test-bucket", machine_image_r2_account_id: "test-account")
   end
 
   describe ".assemble" do
@@ -66,7 +75,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       )
 
       expect {
-        described_class.assemble(machine_image, "1.0", source_vm.reload)
+        described_class.assemble(machine_image, "1.0", source_vm.reload, object_store, bucket: "test-bucket")
       }.to raise_error("source vm must have only one storage volume")
     end
 
@@ -80,7 +89,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       )
 
       expect {
-        described_class.assemble(machine_image, "1.0", running_vm)
+        described_class.assemble(machine_image, "1.0", running_vm, object_store, bucket: "test-bucket")
       }.to raise_error("source vm must be stopped")
     end
 
@@ -96,7 +105,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       )
 
       expect {
-        described_class.assemble(machine_image, "1.0", old_vm)
+        described_class.assemble(machine_image, "1.0", old_vm, object_store, bucket: "test-bucket")
       }.to raise_error("source vm's vhost block backend must support archive")
     end
 
@@ -110,12 +119,12 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       )
 
       expect {
-        described_class.assemble(machine_image, "1.0", no_backend_vm)
+        described_class.assemble(machine_image, "1.0", no_backend_vm, object_store, bucket: "test-bucket")
       }.to raise_error("source vm's vhost block backend must support archive")
     end
 
     it "creates a machine image version and strand" do
-      strand = described_class.assemble(machine_image, "1.0", source_vm, destroy_source_after: true)
+      strand = described_class.assemble(machine_image, "1.0", source_vm, object_store, bucket: "test-bucket", destroy_source_after: true)
 
       mi_version = MachineImageVersion[strand.id]
       expect(mi_version).not_to be_nil
@@ -126,25 +135,15 @@ RSpec.describe Prog::MachineImage::CreateVersion do
 
       metal = mi_version.metal
       expect(metal).not_to be_nil
+      expect(metal.object_store_id).to eq(object_store.id)
       expect(metal.s3_bucket).to eq("test-bucket")
       expect(metal.s3_prefix).to eq("#{project.ubid}/#{machine_image.ubid}/1.0")
-      expect(metal.s3_endpoint).to eq("https://test-account.eu.r2.cloudflarestorage.com")
       expect(metal.key_encryption_key_1).not_to be_nil
 
       expect(strand.prog).to eq("MachineImage::CreateVersion")
       expect(strand.label).to eq("archive")
       expect(strand.stack.first["source_vm_id"]).to eq(source_vm.id)
       expect(strand.stack.first["destroy_source_after"]).to be true
-    end
-  end
-
-  describe ".r2_endpoint_url" do
-    it "returns US endpoint for US locations" do
-      expect(described_class.r2_endpoint_url("us-west-2")).to eq("https://test-account.r2.cloudflarestorage.com")
-    end
-
-    it "returns EU endpoint for non-US locations" do
-      expect(described_class.r2_endpoint_url("eu-central-h1")).to eq("https://test-account.eu.r2.cloudflarestorage.com")
     end
   end
 
@@ -204,12 +203,10 @@ RSpec.describe Prog::MachineImage::CreateVersion do
 
   describe "#archive_params_json" do
     it "generates JSON payload with temporary credentials" do
-      cloudflare_client = instance_double(CloudflareClient)
-      allow(CloudflareClient).to receive(:new).with("test-api-token").and_return(cloudflare_client)
-      allow(cloudflare_client).to receive(:generate_temp_credentials).and_return(
+      allow(object_store).to receive(:generate_temp_credentials).with(bucket: "test-bucket").and_return(
         {access_key_id: "ak", secret_access_key: "sk", session_token: "st"}
       )
-      allow(Config).to receive_messages(machine_image_r2_api_token: "test-api-token", machine_image_r2_access_key: "test-access-key")
+      allow(mi_version.metal).to receive(:object_store).and_return(object_store)
 
       result = JSON.parse(prog.archive_params_json)
 
@@ -220,7 +217,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       expect(result["kek"]).to eq(source_kek.secret_key_material_hash)
       metal = mi_version.metal
       expect(result["target_conf"]).to include(
-        "endpoint" => metal.s3_endpoint,
+        "endpoint" => object_store.url,
         "bucket" => metal.s3_bucket,
         "prefix" => metal.s3_prefix,
         "access_key_id" => "ak",
@@ -237,8 +234,8 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       page2 = double(contents: [double(size: 5)])
       s3 = instance_double(Aws::S3::Client)
 
-      allow(Aws::S3::Client).to receive(:new).and_return(s3)
-      allow(Config).to receive_messages(machine_image_r2_access_key: "ak", machine_image_r2_secret_key: "sk")
+      allow(object_store).to receive(:s3_client).and_return(s3)
+      allow(mi_version.metal).to receive(:object_store).and_return(object_store)
       allow(s3).to receive(:list_objects_v2).with(bucket: "test-bucket", prefix: mi_version.metal.s3_prefix).and_return([page1, page2])
 
       expect(prog.archive_size_bytes).to eq(35)

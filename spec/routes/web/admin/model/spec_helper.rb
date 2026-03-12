@@ -310,9 +310,10 @@ module AdminModelSpecHelper
         version: "20240101",
         actual_size_mib: 1024
       )
+      os = create_object_store
       kek = StorageKeyEncryptionKey.create(algorithm: "aes-256-gcm", key: "a" * 64, init_vector: "b" * 24, auth_data: "test")
       MachineImageVersionMetal.create_with_id(v,
-        s3_endpoint: "https://s3.example.com",
+        object_store_id: os.id,
         s3_bucket: "test-bucket",
         s3_prefix: "test-prefix",
         key_encryption_key_1_id: kek.id
@@ -323,6 +324,15 @@ module AdminModelSpecHelper
     def create_machine_image_version_metal
       v = create_machine_image_version
       MachineImageVersionMetal[v.id]
+    end
+
+    def create_object_store
+      ObjectStore.create(
+        name: "test-store-#{SecureRandom.hex(4)}",
+        url: "https://s3.example.com",
+        access_key: "test-access-key",
+        secret_key: "test-secret-key"
+      )
     end
 
     def create_load_balancer_port
