@@ -24,18 +24,21 @@ RSpec.describe Prog::MachineImage::CreateVersion do
   let(:source_kek) { source_vol.key_encryption_key_1 }
   let(:machine_image) { MachineImage.create(name: "test-image", arch: "x64", project_id: project.id, location_id: Location[Location::HETZNER_FSN1_ID].id) }
   let(:mi_version) {
-    MachineImageVersion.create(
+    v = MachineImageVersion.create(
       machine_image_id: machine_image.id,
       version: "1.0",
       enabled: false,
-      actual_size_mib: 5120,
-      key_encryption_key_id: StorageKeyEncryptionKey.create_random(auth_data: "target-kek").id,
+      actual_size_mib: 5120
+    )
+    MachineImageVersionMetal.create_with_id(v,
       s3_endpoint: "https://test-account.eu.r2.cloudflarestorage.com",
       s3_bucket: "test-bucket",
-      s3_prefix: "#{project.ubid}/#{machine_image.ubid}/1.0"
+      s3_prefix: "#{project.ubid}/#{machine_image.ubid}/1.0",
+      key_encryption_key_1_id: StorageKeyEncryptionKey.create_random(auth_data: "target-kek").id
     )
+    v
   }
-  let(:target_kek) { mi_version.key_encryption_key }
+  let(:target_kek) { mi_version.metal.key_encryption_key_1 }
   let(:strand) {
     Strand.create(
       prog: "MachineImage::CreateVersion",
@@ -120,10 +123,13 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       expect(mi_version.version).to eq("1.0")
       expect(mi_version.enabled).to be false
       expect(mi_version.actual_size_mib).to eq(5120)
-      expect(mi_version.s3_bucket).to eq("test-bucket")
-      expect(mi_version.s3_prefix).to eq("#{project.ubid}/#{machine_image.ubid}/1.0")
-      expect(mi_version.s3_endpoint).to eq("https://test-account.eu.r2.cloudflarestorage.com")
-      expect(mi_version.key_encryption_key).not_to be_nil
+
+      metal = mi_version.metal
+      expect(metal).not_to be_nil
+      expect(metal.s3_bucket).to eq("test-bucket")
+      expect(metal.s3_prefix).to eq("#{project.ubid}/#{machine_image.ubid}/1.0")
+      expect(metal.s3_endpoint).to eq("https://test-account.eu.r2.cloudflarestorage.com")
+      expect(metal.key_encryption_key_1).not_to be_nil
 
       expect(strand.prog).to eq("MachineImage::CreateVersion")
       expect(strand.label).to eq("archive")
@@ -183,7 +189,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       mi_version.reload
       machine_image.reload
       expect(mi_version.enabled).to be true
-      expect(mi_version.archive_size_mib).to eq(10)
+      expect(mi_version.metal.reload.archive_size_mib).to eq(10)
       expect(machine_image.latest_version_id).to eq(mi_version.id)
     end
 
@@ -212,10 +218,11 @@ RSpec.describe Prog::MachineImage::CreateVersion do
       expect(result["disk_index"]).to eq(0)
       expect(result["vhost_block_backend_version"]).to eq("v0.4.0")
       expect(result["kek"]).to eq(source_kek.secret_key_material_hash)
+      metal = mi_version.metal
       expect(result["target_conf"]).to include(
-        "endpoint" => mi_version.s3_endpoint,
-        "bucket" => mi_version.s3_bucket,
-        "prefix" => mi_version.s3_prefix,
+        "endpoint" => metal.s3_endpoint,
+        "bucket" => metal.s3_bucket,
+        "prefix" => metal.s3_prefix,
         "access_key_id" => "ak",
         "secret_access_key" => "sk",
         "session_token" => "st",
@@ -232,7 +239,7 @@ RSpec.describe Prog::MachineImage::CreateVersion do
 
       allow(Aws::S3::Client).to receive(:new).and_return(s3)
       allow(Config).to receive_messages(machine_image_r2_access_key: "ak", machine_image_r2_secret_key: "sk")
-      allow(s3).to receive(:list_objects_v2).with(bucket: "test-bucket", prefix: mi_version.s3_prefix).and_return([page1, page2])
+      allow(s3).to receive(:list_objects_v2).with(bucket: "test-bucket", prefix: mi_version.metal.s3_prefix).and_return([page1, page2])
 
       expect(prog.archive_size_bytes).to eq(35)
     end

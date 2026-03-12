@@ -305,16 +305,24 @@ module AdminModelSpecHelper
 
     def create_machine_image_version
       mi = create_machine_image
-      kek = StorageKeyEncryptionKey.create(algorithm: "aes-256-gcm", key: "a" * 64, init_vector: "b" * 24, auth_data: "test")
-      MachineImageVersion.create(
+      v = MachineImageVersion.create(
         machine_image_id: mi.id,
         version: "20240101",
-        actual_size_mib: 1024,
-        key_encryption_key_id: kek.id,
+        actual_size_mib: 1024
+      )
+      kek = StorageKeyEncryptionKey.create(algorithm: "aes-256-gcm", key: "a" * 64, init_vector: "b" * 24, auth_data: "test")
+      MachineImageVersionMetal.create_with_id(v,
         s3_endpoint: "https://s3.example.com",
         s3_bucket: "test-bucket",
-        s3_prefix: "test-prefix"
+        s3_prefix: "test-prefix",
+        key_encryption_key_1_id: kek.id
       )
+      v
+    end
+
+    def create_machine_image_version_metal
+      v = create_machine_image_version
+      MachineImageVersionMetal[v.id]
     end
 
     def create_load_balancer_port

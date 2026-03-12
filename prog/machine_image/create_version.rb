@@ -20,11 +20,14 @@ class Prog::MachineImage::CreateVersion < Prog::Base
       machine_image_id: machine_image.id,
       version:,
       enabled: false,
-      actual_size_mib: sv.size_gib * 1024,
-      key_encryption_key_id: key_encryption_key.id,
+      actual_size_mib: sv.size_gib * 1024
+    )
+
+    MachineImageVersionMetal.create_with_id(mi_version,
       s3_endpoint: r2_endpoint_url(machine_image.location.name),
       s3_bucket: Config.machine_image_r2_bucket,
-      s3_prefix:
+      s3_prefix:,
+      key_encryption_key_1_id: key_encryption_key.id
     )
 
     Strand.create(
@@ -66,8 +69,8 @@ class Prog::MachineImage::CreateVersion < Prog::Base
     machine_image_version.machine_image.update(
       latest_version_id: machine_image_version.id
     )
-    machine_image_version.update(
-      enabled: true,
+    machine_image_version.update(enabled: true)
+    machine_image_version.metal.update(
       archive_size_mib: archive_size_bytes / 1024 / 1024
     )
     if frame["destroy_source_after"]
@@ -91,6 +94,8 @@ class Prog::MachineImage::CreateVersion < Prog::Base
     source_vm = Vm[frame["source_vm_id"]]
     sv = source_vm.vm_storage_volumes.first
 
+    metal = machine_image_version.metal
+
     {
       vm_name: source_vm.inhost_name,
       device: sv.storage_device.name,
@@ -98,28 +103,30 @@ class Prog::MachineImage::CreateVersion < Prog::Base
       vhost_block_backend_version: sv.vhost_block_backend.version,
       kek: sv.key_encryption_key_1.secret_key_material_hash,
       target_conf: {
-        endpoint: machine_image_version.s3_endpoint,
+        endpoint: metal.s3_endpoint,
         region: "auto",
-        bucket: machine_image_version.s3_bucket,
-        prefix: machine_image_version.s3_prefix,
+        bucket: metal.s3_bucket,
+        prefix: metal.s3_prefix,
         access_key_id: creds[:access_key_id],
         secret_access_key: creds[:secret_access_key],
         session_token: creds[:session_token],
-        archive_kek: machine_image_version.key_encryption_key.secret_key_material_hash
+        archive_kek: metal.key_encryption_key_1.secret_key_material_hash
       }
     }.to_json
   end
 
   def archive_size_bytes
+    metal = machine_image_version.metal
+
     s3 = Aws::S3::Client.new(
       region: "auto",
-      endpoint: machine_image_version.s3_endpoint,
+      endpoint: metal.s3_endpoint,
       access_key_id: Config.machine_image_r2_access_key,
       secret_access_key: Config.machine_image_r2_secret_key
     )
 
     total = 0
-    s3.list_objects_v2(bucket: machine_image_version.s3_bucket, prefix: machine_image_version.s3_prefix).each do |page|
+    s3.list_objects_v2(bucket: metal.s3_bucket, prefix: metal.s3_prefix).each do |page|
       total += page.contents.sum(&:size)
     end
     total

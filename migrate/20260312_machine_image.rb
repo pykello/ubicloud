@@ -26,16 +26,20 @@ Sequel.migration do
       # was created. A VM which uses this machine image version should have a disk
       # of at least this size.
       column :actual_size_mib, :integer, null: false
+
+      unique [:machine_image_id, :version]
+    end
+
+    create_table(:machine_image_version_metal) do
+      foreign_key :id, :machine_image_version, type: :uuid, primary_key: true
+      column :s3_endpoint, :text, collate: '"C"', null: false
+      column :s3_bucket, :text, collate: '"C"', null: false
+      column :s3_prefix, :text, collate: '"C"', null: false
+      foreign_key :key_encryption_key_1_id, :storage_key_encryption_key, type: :uuid, null: false
       # archive_size_mib is the amount of storage used in the object storage.
       # This can be smaller than the actual size because of compression. This
       # will be used for billing purposes.
       column :archive_size_mib, :integer
-      foreign_key :key_encryption_key_id, :storage_key_encryption_key, type: :uuid, null: false
-      column :s3_endpoint, :text, collate: '"C"', null: false
-      column :s3_bucket, :text, collate: '"C"', null: false
-      column :s3_prefix, :text, collate: '"C"', null: false
-
-      unique [:machine_image_id, :version]
     end
 
     alter_table(:machine_image) do
