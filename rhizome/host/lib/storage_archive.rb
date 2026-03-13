@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require "tmpdir"
 require_relative "../../common/lib/util"
+require_relative "boot_image"
 require_relative "kek_pipe"
 require_relative "toml"
 require_relative "vhost_block_backend"
@@ -19,13 +21,42 @@ class StorageArchive
     @backend = VhostBlockBackend.new(vhost_block_backend_version)
 
     fail "vhost block backend version #{vhost_block_backend_version} does not support archive" unless @backend.supports_archive?
-    StorageArchive.verify_key_encryption_key(disk_kek, "disk_kek")
+    StorageArchive.verify_key_encryption_key(disk_kek, "disk_kek") if disk_kek
     StorageArchive.verify_key_encryption_key(target_conf["archive_kek"], "target_conf archive_kek")
 
     @disk_config_path = disk_config_path
     @disk_kek_path = disk_kek_path
     @disk_kek = disk_kek
     @target_conf = target_conf
+  end
+
+  def self.archive_url(url, sha256sum, target_conf, vhost_block_backend_version)
+    extend Toml
+
+    Dir.mktmpdir do |dir|
+      # download the image and convert it to raw format.
+      boot_image = BootImage.new("image", nil, image_root: dir)
+      boot_image.download(url: url, sha256sum: sha256sum)
+
+      # setup a disk with the image as the stripe source
+      disk_raw_path = File.join(dir, "disk.raw")
+      image_size = File.size(boot_image.image_path)
+      image_size_mib = (image_size + 1024 * 1024 - 1) / (1024 * 1024)
+      r "truncate", "-s", "#{image_size_mib}M", disk_raw_path
+
+      config_path = File.join(dir, "vhost-backend.conf")
+      File.write(config_path, [
+        toml_section("device", {"data_path" => disk_raw_path, "metadata_path" => File.join(dir, "metadata")}),
+        toml_section("stripe_source", {"type" => "raw", "image_path" => boot_image.image_path}),
+        toml_section("danger_zone", {"enabled" => true, "allow_unencrypted_disk" => true})
+      ].join("\n"))
+
+      vp = VhostBlockBackend.new(vhost_block_backend_version)
+      r vp.init_metadata_path, "--config", config_path, env: {"RUST_LOG" => "info"}
+
+      # archive
+      StorageArchive.new(config_path, nil, nil, target_conf, vhost_block_backend_version).archive
+    end
   end
 
   def archive
@@ -38,13 +69,17 @@ class StorageArchive
     ]
     env = {"RUST_LOG" => "info"}
     target_config = build_target_config
-    run_with_kek_pipe(
-      cmd,
-      kek_pipe: @disk_kek_path,
-      kek_content: @disk_kek["key"],
-      env: env,
-      stdin: target_config
-    )
+    if @disk_kek_path
+      run_with_kek_pipe(
+        cmd,
+        kek_pipe: @disk_kek_path,
+        kek_content: @disk_kek["key"],
+        env: env,
+        stdin: target_config
+      )
+    else
+      r(*cmd, env: env, stdin: target_config)
+    end
   end
 
   def build_target_config

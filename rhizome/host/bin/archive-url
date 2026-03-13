@@ -1,0 +1,22 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../../common/lib/util"
+require_relative "../lib/storage_archive"
+
+params = JSON.parse($stdin.read)
+
+validate_keys(
+  "archive-url parameters",
+  %w[url sha256sum target_conf vhost_block_backend_version],
+  [],
+  params
+)
+
+StorageArchive.archive_url(
+  params.fetch("url"),
+  params.fetch("sha256sum"),
+  params.fetch("target_conf"),
+  params.fetch("vhost_block_backend_version")
+)
