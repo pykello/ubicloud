@@ -298,6 +298,44 @@ module AdminModelSpecHelper
       LoadBalancer.create(name: "test-lb", project_id: project.id, private_subnet_id: ps.id, health_check_endpoint: "/health")
     end
 
+    def create_machine_image
+      project = Project.create(name: "test-project")
+      MachineImage.create(name: "test-image", arch: "x64", project_id: project.id, location_id: Location::HETZNER_FSN1_ID)
+    end
+
+    def create_machine_image_store
+      project = Project.create(name: "test-mis-project")
+      MachineImageStore.create(
+        project_id: project.id,
+        location_id: Location::HETZNER_FSN1_ID,
+        provider: "cloudflare",
+        region: "auto",
+        endpoint: "https://s3.example.com",
+        bucket: "test-bucket",
+        access_key: "test-access-key",
+        secret_key: "test-secret-key"
+      )
+    end
+
+    def create_machine_image_version
+      mi = create_machine_image
+      MachineImageVersion.create(
+        machine_image_id: mi.id,
+        version: "20240101",
+        actual_size_mib: 1024
+      )
+    end
+
+    def create_machine_image_version_metal
+      mi_version = create_machine_image_version
+      store = create_machine_image_store
+      kek = StorageKeyEncryptionKey.create(algorithm: "aes-256-gcm", key: "a" * 64, init_vector: "b" * 24, auth_data: "test")
+      MachineImageVersionMetal.create_with_id(mi_version,
+        archive_kek_id: kek.id,
+        store_id: store.id,
+        store_prefix: "test-prefix")
+    end
+
     def create_load_balancer_port
       lb = create_load_balancer
       LoadBalancerPort.create(load_balancer_id: lb.id, src_port: 80, dst_port: 8080)
