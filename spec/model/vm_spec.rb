@@ -390,7 +390,7 @@ RSpec.describe Vm do
          "max_read_mbytes_per_sec" => nil,
          "max_write_mbytes_per_sec" => nil,
          "vhost_block_backend_version" => nil, "num_queues" => 1, "queue_size" => 256,
-         "copy_on_read" => false, "slice_name" => "system.slice"},
+         "copy_on_read" => false, "slice_name" => "system.slice", "track_written" => false},
         {"boot" => false, "image" => nil, "image_version" => nil, "size_gib" => 100,
          "device_id" => expected_device_id_1, "disk_index" => 1, "encrypted" => false,
          "spdk_version" => "spdk1", "use_bdev_ubi" => true,
@@ -398,7 +398,7 @@ RSpec.describe Vm do
          "max_read_mbytes_per_sec" => 200,
          "max_write_mbytes_per_sec" => 300,
          "vhost_block_backend_version" => "v0.1-5", "num_queues" => 4, "queue_size" => 64,
-         "copy_on_read" => false, "slice_name" => "system.slice"}
+         "copy_on_read" => false, "slice_name" => "system.slice", "track_written" => false}
       ])
     end
 
