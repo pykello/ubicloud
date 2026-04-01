@@ -729,7 +729,8 @@ module Scheduling::Allocator
           max_read_mbytes_per_sec: volume["max_read_mbytes_per_sec"],
           max_write_mbytes_per_sec: volume["max_write_mbytes_per_sec"],
           vring_workers: vhost_block_backend_id ? volume["vring_workers"] : nil,
-          track_written: volume.fetch("track_written", false)
+          track_written: volume.fetch("track_written", false),
+          machine_image_version_id: volume["machine_image_version_id"]
         )
       end
     end
