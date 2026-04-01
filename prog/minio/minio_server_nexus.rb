@@ -26,8 +26,8 @@ class Prog::Minio::MinioServerNexus < Prog::Base
         name: ubid.to_s,
         size: minio_pool.vm_size,
         storage_volumes: [
-          {encrypted: true, size_gib: 30}
-        ] + Array.new(minio_pool.per_server_drive_count) { {encrypted: true, size_gib: (minio_pool.per_server_storage_size / minio_pool.per_server_drive_count).floor} },
+          {size_gib: 30}
+        ] + Array.new(minio_pool.per_server_drive_count) { {size_gib: (minio_pool.per_server_storage_size / minio_pool.per_server_drive_count).floor} },
         boot_image: "ubuntu-jammy",
         enable_ip4: true,
         private_subnet_id: minio_pool.cluster.private_subnet.id,

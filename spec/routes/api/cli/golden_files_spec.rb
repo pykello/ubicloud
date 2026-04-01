@@ -86,7 +86,7 @@ RSpec.describe Clover, "cli" do
         name: vm_name,
         location_id: kubernetes_cluster.location.id,
         size: kubernetes_cluster.target_node_size,
-        storage_volumes: [{encrypted: true, size_gib: kubernetes_cluster.target_node_storage_size_gib}],
+        storage_volumes: [{size_gib: kubernetes_cluster.target_node_storage_size_gib}],
         boot_image: "kubernetes-#{kubernetes_cluster.version.tr(".", "_")}",
         private_subnet_id: kubernetes_cluster.private_subnet_id,
         allow_private_subnet_in_other_project: true,

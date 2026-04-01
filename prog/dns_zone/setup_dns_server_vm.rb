@@ -30,7 +30,7 @@ class Prog::DnsZone::SetupDnsServerVm < Prog::Base
         name:,
         size: vm_size,
         storage_volumes: [
-          {encrypted: true, size_gib: storage_size_gib}
+          {size_gib: storage_size_gib}
         ],
         boot_image:,
         enable_ip4: true

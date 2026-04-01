@@ -24,8 +24,8 @@ class Prog::VictoriaMetrics::VictoriaMetricsServerNexus < Prog::Base
         name: ubid.to_s,
         size: vr.target_vm_size,
         storage_volumes: [
-          {encrypted: true, size_gib: 30},
-          {encrypted: true, size_gib: vr.target_storage_size_gib}
+          {size_gib: 30},
+          {size_gib: vr.target_storage_size_gib}
         ],
         boot_image: "ubuntu-noble",
         private_subnet_id: vr.private_subnet_id,

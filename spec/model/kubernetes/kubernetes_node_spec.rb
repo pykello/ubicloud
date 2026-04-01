@@ -7,7 +7,7 @@ RSpec.describe KubernetesNode do
     Prog::Kubernetes::KubernetesNodeNexus.assemble(
       Config.kubernetes_service_project_id,
       sshable_unix_user: "ubi", name: "test-node", location_id: Location::HETZNER_FSN1_ID,
-      size: "standard-2", storage_volumes: [{encrypted: true, size_gib: 40}],
+      size: "standard-2", storage_volumes: [{size_gib: 40}],
       boot_image: "kubernetes-v1.33", private_subnet_id: subnet.id, enable_ip4: true,
       kubernetes_cluster_id: kc.id
     ).subject

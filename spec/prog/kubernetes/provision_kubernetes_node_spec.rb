@@ -34,7 +34,7 @@ RSpec.describe Prog::Kubernetes::ProvisionKubernetesNode do
       name: "cp-node",
       location_id: Location::HETZNER_FSN1_ID,
       size: "standard-4",
-      storage_volumes: [{encrypted: true, size_gib: 40}],
+      storage_volumes: [{size_gib: 40}],
       boot_image: Option.kubernetes_versions.first,
       private_subnet_id: subnet.id,
       enable_ip4: true,

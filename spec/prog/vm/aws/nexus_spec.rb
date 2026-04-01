@@ -26,7 +26,7 @@ RSpec.describe Prog::Vm::Aws::Nexus do
   }
 
   let(:storage_volumes) {
-    [{encrypted: true, size_gib: 30}, {encrypted: true, size_gib: 3800}]
+    [{size_gib: 30}, {size_gib: 3800}]
   }
 
   let(:vm_params) {
@@ -89,8 +89,8 @@ usermod -L ubuntu
 
     it "creates correct number of storage volumes for storage optimized instance types" do
       storage_volumes = [
-        {encrypted: true, size_gib: 30},
-        {encrypted: true, size_gib: 7500}
+        {size_gib: 30},
+        {size_gib: 7500}
       ]
 
       vm = Prog::Vm::Nexus.assemble("some_ssh key", project.id, location_id: assemble_loc.id, size: "i8g.8xlarge", arch: "arm64", storage_volumes:).subject

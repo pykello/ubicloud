@@ -116,15 +116,15 @@ RSpec.describe Validation do
 
     describe "#validate_storage_volumes" do
       it "succeeds if there's at least one volume" do
-        expect { described_class.validate_storage_volumes([{encrypted: true}], 0) }.not_to raise_error
+        expect { described_class.validate_storage_volumes([{}], 0) }.not_to raise_error
       end
 
       it "succeeds if rate limits are set" do
-        expect { described_class.validate_storage_volumes([{encrypted: true, max_read_mbytes_per_sec: 10, max_write_mbytes_per_sec: 10}], 0) }.not_to raise_error
+        expect { described_class.validate_storage_volumes([{max_read_mbytes_per_sec: 10, max_write_mbytes_per_sec: 10}], 0) }.not_to raise_error
       end
 
       it "succeeds if track_written is set" do
-        expect { described_class.validate_storage_volumes([{encrypted: true, track_written: true}], 0) }.not_to raise_error
+        expect { described_class.validate_storage_volumes([{track_written: true}], 0) }.not_to raise_error
       end
 
       it "fails if no volumes" do
@@ -132,8 +132,8 @@ RSpec.describe Validation do
       end
 
       it "fails if boot_disk_index out of range" do
-        expect { described_class.validate_storage_volumes([{encrypted: true}], -1) }.to raise_error described_class::ValidationFailed
-        expect { described_class.validate_storage_volumes([{encrypted: true}], 1) }.to raise_error described_class::ValidationFailed
+        expect { described_class.validate_storage_volumes([{}], -1) }.to raise_error described_class::ValidationFailed
+        expect { described_class.validate_storage_volumes([{}], 1) }.to raise_error described_class::ValidationFailed
       end
 
       it "fails if contains an invalid key" do

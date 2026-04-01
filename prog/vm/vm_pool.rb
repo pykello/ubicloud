@@ -23,8 +23,7 @@ class Prog::Vm::VmPool < Prog::Base
 
   label def create_new_vm
     storage_params = {
-      size_gib: vm_pool.storage_size_gib,
-      encrypted: vm_pool.storage_encrypted
+      size_gib: vm_pool.storage_size_gib
     }
     ps = Prog::Vnet::SubnetNexus.assemble(
       Config.vm_pool_project_id,

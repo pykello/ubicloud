@@ -52,7 +52,7 @@ class Prog::Kubernetes::ProvisionKubernetesNode < Prog::Base
         kubernetes_cluster.target_node_storage_size_gib]
     end
 
-    storage_volumes = [{encrypted: true, size_gib: storage_size_gib}] if storage_size_gib
+    storage_volumes = [{size_gib: storage_size_gib}] if storage_size_gib
 
     boot_image = "kubernetes-#{kubernetes_cluster.version.tr(".", "_")}"
 

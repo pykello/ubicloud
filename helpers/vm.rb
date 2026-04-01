@@ -61,7 +61,7 @@ class Clover
 
     if assemble_params[:storage_size]
       storage_size = Validation.validate_vm_storage_size(assemble_params[:size] || Prog::Vm::Nexus::DEFAULT_SIZE, "x64", assemble_params[:storage_size])
-      assemble_params[:storage_volumes] = [{size_gib: storage_size, encrypted: true}]
+      assemble_params[:storage_volumes] = [{size_gib: storage_size}]
       assemble_params.delete(:storage_size)
     end
 

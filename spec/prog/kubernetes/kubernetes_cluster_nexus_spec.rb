@@ -792,7 +792,7 @@ RSpec.describe Prog::Kubernetes::KubernetesClusterNexus do
         name: "t3",
         location_id: kubernetes_cluster.location_id,
         size: kubernetes_nodepool.target_node_size,
-        storage_volumes: [{encrypted: true, size_gib: kubernetes_nodepool.target_node_storage_size_gib}],
+        storage_volumes: [{size_gib: kubernetes_nodepool.target_node_storage_size_gib}],
         boot_image: "kubernetes-#{kubernetes_cluster.version.tr(".", "_")}",
         private_subnet_id: kubernetes_cluster.private_subnet_id,
         enable_ip4: true,

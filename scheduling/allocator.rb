@@ -705,7 +705,7 @@ module Scheduling::Allocator
           use_bdev_ubi = false
         end
 
-        key_encryption_key = if volume["encrypted"]
+        key_encryption_key = if !volume["read_only"]
           StorageKeyEncryptionKey.create_random(auth_data: "#{vm.inhost_name}_#{disk_index}")
         end
 

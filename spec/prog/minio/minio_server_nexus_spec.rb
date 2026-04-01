@@ -72,9 +72,7 @@ RSpec.describe Prog::Minio::MinioServerNexus do
       expect(Vm.first.private_subnets.first.id).to eq minio_pool.cluster.private_subnet_id
 
       expect(Vm.first.strand.stack[0]["storage_volumes"].length).to eq 2
-      expect(Vm.first.strand.stack[0]["storage_volumes"][0]["encrypted"]).to be true
       expect(Vm.first.strand.stack[0]["storage_volumes"][0]["size_gib"]).to eq 30
-      expect(Vm.first.strand.stack[0]["storage_volumes"][1]["encrypted"]).to be true
       expect(Vm.first.strand.stack[0]["storage_volumes"][1]["size_gib"]).to eq 100
     end
 

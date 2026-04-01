@@ -28,12 +28,11 @@ class Prog::Test::VmGroup < Prog::Test::Base
 
     size_options = test_slices ? ["standard-2", "burstable-1"] : ["standard-2"]
     subnets = Array.new(2) { Prog::Vnet::SubnetNexus.assemble(project.id, name: "subnet-#{it}", location_id: Location::HETZNER_FSN1_ID) }
-    encrypted = true
     boot_images = frame.fetch("boot_images")
     storage_options = [
-      [{encrypted:}, {encrypted:, size_gib: 5}],
-      [{encrypted:, max_read_mbytes_per_sec: 200, max_write_mbytes_per_sec: 150}],
-      [{encrypted:}]
+      [{}, {size_gib: 5}],
+      [{max_read_mbytes_per_sec: 200, max_write_mbytes_per_sec: 150}],
+      [{}]
     ]
     vm_count = [boot_images.size, storage_options.size, size_options.size].max
     vms = Array.new(vm_count) do |index|
