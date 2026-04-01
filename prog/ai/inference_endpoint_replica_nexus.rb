@@ -23,7 +23,7 @@ class Prog::Ai::InferenceEndpointReplicaNexus < Prog::Base
         location_id: inference_endpoint.location_id,
         name: ubid.to_s,
         size: inference_endpoint.vm_size,
-        storage_volumes: inference_endpoint.storage_volumes.map { it.transform_keys(&:to_sym) },
+        storage_volumes: inference_endpoint.storage_volumes.map { it.transform_keys(&:to_sym).except(:encrypted) },
         boot_image: inference_endpoint.boot_image,
         private_subnet_id: inference_endpoint.load_balancer.private_subnet.id,
         enable_ip4: true,

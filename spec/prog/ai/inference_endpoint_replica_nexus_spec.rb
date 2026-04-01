@@ -80,6 +80,30 @@ RSpec.describe Prog::Ai::InferenceEndpointReplicaNexus do
       expect(replica.vm.private_subnets).to include(ie.private_subnet)
       expect(replica.vm.boot_image).to eq(ie.boot_image)
     end
+
+    it "filters out legacy encrypted key from storage volumes" do
+      user_project = Project.create(name: "default")
+      ie_project = Project.create(name: "default")
+      Firewall.create(name: "inference-endpoint-firewall", location_id: Location::HETZNER_FSN1_ID, project_id: ie_project.id)
+
+      expect(Config).to receive(:inference_endpoint_service_project_id).and_return(ie_project.id).at_least(:once)
+      st_ie = Prog::Ai::InferenceEndpointNexus.assemble_with_model(
+        project_id: user_project.id,
+        location_id: Location::HETZNER_FSN1_ID,
+        name: "ie-legacy",
+        model_id: "8b0b55b3-fb99-415f-8441-3abef2c2a200"
+      )
+      ie = st_ie.subject
+
+      # Simulate a legacy record that still has "encrypted" in its storage_volumes JSONB
+      ie.update(storage_volumes: ie.storage_volumes.map { |v| v.merge("encrypted" => true) })
+      ie.reload
+
+      st = described_class.assemble(ie.id)
+      replica = InferenceEndpointReplica[st.id]
+      expect(replica).not_to be_nil
+      expect(replica.vm).not_to be_nil
+    end
   end
 
   describe "#start" do
