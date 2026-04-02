@@ -56,6 +56,10 @@ class VhostBlockBackend
     "#{dir}/init-metadata"
   end
 
+  def dump_metadata_path
+    "#{dir}/dump-metadata"
+  end
+
   def archive_path
     "#{dir}/archive"
   end

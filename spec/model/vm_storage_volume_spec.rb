@@ -68,4 +68,55 @@ RSpec.describe VmStorageVolume do
       expect(v.queue_size).to eq(64)
     end
   end
+
+  describe "#dump_metadata" do
+    it "calls dump-storage-metadata on the host via ssh" do
+      vm = instance_double(Vm, inhost_name: "test-vm")
+      sshable = instance_double(Sshable)
+      vm_host = instance_double(VmHost, sshable: sshable)
+      allow(vm).to receive(:vm_host).and_return(vm_host)
+
+      storage_volume_params = {"disk_index" => 2, "device_id" => "test-vm_2", "encrypted" => true}
+      allow(vm).to receive(:storage_volumes).and_return([storage_volume_params])
+
+      kek = instance_double(StorageKeyEncryptionKey)
+      secret_hash = {"key" => "test-key"}
+      allow(kek).to receive(:secret_key_material_hash).and_return(secret_hash)
+
+      v = described_class.new(disk_index: 2)
+      allow(v).to receive(:vm).and_return(vm)
+      allow(v).to receive(:key_encryption_key_1).and_return(kek)
+
+      expected_params = storage_volume_params.merge("key_wrapping_secrets" => secret_hash)
+      expect(sshable).to receive(:cmd).with(
+        "sudo host/bin/dump-storage-metadata :vm_name",
+        vm_name: "test-vm",
+        stdin: JSON.generate(expected_params)
+      )
+
+      v.dump_metadata
+    end
+
+    it "does not include key_wrapping_secrets for unencrypted volumes" do
+      vm = instance_double(Vm, inhost_name: "test-vm")
+      sshable = instance_double(Sshable)
+      vm_host = instance_double(VmHost, sshable: sshable)
+      allow(vm).to receive(:vm_host).and_return(vm_host)
+
+      storage_volume_params = {"disk_index" => 2, "device_id" => "test-vm_2", "encrypted" => false}
+      allow(vm).to receive(:storage_volumes).and_return([storage_volume_params])
+
+      v = described_class.new(disk_index: 2)
+      allow(v).to receive(:vm).and_return(vm)
+      allow(v).to receive(:key_encryption_key_1).and_return(nil)
+
+      expect(sshable).to receive(:cmd).with(
+        "sudo host/bin/dump-storage-metadata :vm_name",
+        vm_name: "test-vm",
+        stdin: JSON.generate(storage_volume_params)
+      )
+
+      v.dump_metadata
+    end
+  end
 end

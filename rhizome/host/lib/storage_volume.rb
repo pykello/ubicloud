@@ -164,6 +164,23 @@ class StorageVolume
       owner: @vm_name)
   end
 
+  def vhost_backend_dump_metadata(key_wrapping_secrets)
+    cmd = [
+      "sudo", "-u", @vm_name,
+      vhost_backend.dump_metadata_path,
+      "--config", sp.vhost_backend_config
+    ]
+
+    if @encrypted
+      run_with_kek_pipe(cmd,
+        kek_pipe: sp.kek_pipe,
+        kek_content: vhost_backend_kek(key_wrapping_secrets),
+        owner: @vm_name)
+    else
+      r(*cmd)
+    end
+  end
+
   def vhost_backend_create_service_file
     # v2 config embeds the kek pipe path in the TOML, so no --kek CLI arg needed
     kek_arg = if @encrypted && !use_config_v2?

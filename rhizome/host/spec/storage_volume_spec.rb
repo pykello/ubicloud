@@ -569,6 +569,32 @@ RSpec.describe StorageVolume do
     end
   end
 
+  describe "#vhost_backend_dump_metadata" do
+    it "calls dump-metadata with kek pipe for encrypted volumes" do
+      key_wrapping_secrets = {
+        "key" => Base64.encode64("test-key-material")
+      }
+      expect(encrypted_vhost_v2_sv).to receive(:run_with_kek_pipe).with(
+        ["sudo", "-u", "test",
+          "/opt/vhost-block-backend/v0.4.0/dump-metadata",
+          "--config", "/var/storage/test/2/vhost-backend.conf"],
+        kek_pipe: "/var/storage/test/2/kek.pipe",
+        kek_content: key_wrapping_secrets["key"],
+        owner: "test"
+      )
+      encrypted_vhost_v2_sv.vhost_backend_dump_metadata(key_wrapping_secrets)
+    end
+
+    it "calls dump-metadata without kek pipe for unencrypted volumes" do
+      expect(unencrypted_vhost_v2_sv).to receive(:r).with(
+        "sudo", "-u", "test",
+        "/opt/vhost-block-backend/v0.4.0/dump-metadata",
+        "--config", "/var/storage/test/2/vhost-backend.conf"
+      )
+      unencrypted_vhost_v2_sv.vhost_backend_dump_metadata(nil)
+    end
+  end
+
   describe "#vhost_backend_create_service_file" do
     it "can create vhost backend service file for encrypted vhost" do
       service_file = "/etc/systemd/system/test-2-storage.service"

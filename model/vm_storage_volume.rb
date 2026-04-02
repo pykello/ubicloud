@@ -53,6 +53,18 @@ class VmStorageVolume < Sequel::Model
       256
     end
   end
+
+  def dump_metadata
+    params = vm.storage_volumes.find { _1["disk_index"] == disk_index }
+    if key_encryption_key_1
+      params["key_wrapping_secrets"] = key_encryption_key_1.secret_key_material_hash
+    end
+    vm.vm_host.sshable.cmd(
+      "sudo host/bin/dump-storage-metadata :vm_name",
+      vm_name: vm.inhost_name,
+      stdin: JSON.generate(params)
+    )
+  end
 end
 
 # Table: vm_storage_volume
