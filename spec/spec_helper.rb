@@ -210,7 +210,7 @@ RSpec.configure do |config|
       @hop = hop
       hop.new_prog == expected_prog &&
         hop.new_label == (expected_label || "start") &&
-        (@expected_frame.nil? || hop.strand_update_args[:stack].first&.include?(@expected_frame))
+        (!@expected_frame || hop.strand_update_args[:stack].first >= @expected_frame)
     end
 
     failure_message do
