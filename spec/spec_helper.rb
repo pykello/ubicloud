@@ -196,11 +196,6 @@ RSpec.configure do |config|
   end
 
   # Custom matcher to expect Progs to push a new prog
-  # Usage:
-  #   expect { nx.foo }.to push("BootstrapRhizome")
-  #   expect { nx.foo }.to push("BootstrapRhizome", "setup")
-  #   expect { nx.foo }.to push("BootstrapRhizome").with("target_folder" => "host")
-  #   expect { nx.foo }.to push("BootstrapRhizome", "setup").with("key" => "val")
   RSpec::Matchers.define :push do |expected_prog, expected_label|
     supports_block_expectations
 
@@ -213,27 +208,14 @@ RSpec.configure do |config|
       false
     rescue Prog::Base::Hop => hop
       @hop = hop
-      label = expected_label || "start"
       hop.new_prog == expected_prog &&
-        hop.new_label == label &&
+        hop.new_label == (expected_label || "start") &&
         (@expected_frame.nil? || hop.strand_update_args[:stack].first&.include?(@expected_frame))
     end
 
     failure_message do
-      label = expected_label || "start"
-      actual_prog = @hop&.new_prog || "not hopped"
-      actual_label = @hop&.new_label
-      actual_frame = @hop&.strand_update_args&.dig(:stack)&.first
-      msg = "expected: push #{expected_prog}##{label}"
-      msg += " with #{@expected_frame.inspect}" if @expected_frame
-      msg += "\n     got: "
-      if @hop
-        msg += "#{actual_prog}##{actual_label}"
-        msg += " with #{actual_frame.inspect}" if @expected_frame
-      else
-        msg += "not hopped"
-      end
-      msg
+      "expected: push #{expected_prog}##{expected_label || "start"}\n" \
+        "     got: #{@hop || "not hopped"}"
     end
   end
 
