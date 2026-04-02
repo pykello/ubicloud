@@ -195,6 +195,45 @@ RSpec.configure do |config|
     end
   end
 
+  # Custom matcher to expect Progs to push a new prog
+  # Usage:
+  #   expect { nx.foo }.to push("BootstrapRhizome")
+  #   expect { nx.foo }.to push("BootstrapRhizome").with("target_folder" => "host")
+  #   expect { nx.foo }.to push("Storage::SetupVhostBlockBackend").with("allocation_weight" => 100)
+  RSpec::Matchers.define :push do |expected_prog|
+    supports_block_expectations
+
+    chain :with do |expected_frame|
+      @expected_frame = expected_frame
+    end
+
+    match do |block|
+      block.call
+      false
+    rescue Prog::Base::Hop => hop
+      @hop = hop
+      hop.new_prog == expected_prog &&
+        hop.new_label == "start" &&
+        (@expected_frame.nil? || hop.strand_update_args[:stack].first&.include?(@expected_frame))
+    end
+
+    failure_message do
+      actual_prog = @hop&.new_prog || "not hopped"
+      actual_label = @hop&.new_label
+      actual_frame = @hop&.strand_update_args&.dig(:stack)&.first
+      msg = "expected: push #{expected_prog}#start"
+      msg += " with #{@expected_frame.inspect}" if @expected_frame
+      msg += "\n     got: "
+      if @hop
+        msg += "#{actual_prog}##{actual_label}"
+        msg += " with #{actual_frame.inspect}" if @expected_frame
+      else
+        msg += "not hopped"
+      end
+      msg
+    end
+  end
+
   # Custom matcher to expect Progs to exit
   # If expected_exitval is not provided, it expects to exit with any value.
   RSpec::Matchers.define :exit do |expected_exitval|
