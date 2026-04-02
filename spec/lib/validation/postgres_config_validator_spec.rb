@@ -173,6 +173,25 @@ RSpec.describe Validation::PostgresConfigValidator do
         expect { validator.validate(config) }.to raise_error(Validation::ValidationFailed)
       end
     end
+
+    context "with PG 18 string patterns defined as String instead of Regexp" do
+      let(:pg18_validator) { described_class.new("18") }
+
+      it "returns a validation error for invalid idle_replication_slot_timeout without crashing" do
+        config = {"idle_replication_slot_timeout" => "notanumber"}
+        expect { pg18_validator.validate(config) }.to raise_error(Validation::ValidationFailed)
+      end
+
+      it "returns a validation error for invalid io_combine_limit without crashing" do
+        config = {"io_combine_limit" => "notanumber"}
+        expect { pg18_validator.validate(config) }.to raise_error(Validation::ValidationFailed)
+      end
+
+      it "returns a validation error for invalid log_rotation_size without crashing" do
+        config = {"log_rotation_size" => "notanumber"}
+        expect { pg18_validator.validate(config) }.to raise_error(Validation::ValidationFailed)
+      end
+    end
   end
 
   describe "#restart_required_params" do
