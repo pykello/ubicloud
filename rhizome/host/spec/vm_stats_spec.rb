@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../lib/vm_stats"
+require_relative "../lib/ubiblk_rpc"
 
 RSpec.describe VmStats do
   let(:vm_stats) { described_class.new("vmh6b1sz") }
@@ -49,6 +50,7 @@ RSpec.describe VmStats do
               "num_queues" => 4,
               "queue_size" => 64,
               "size_gib" => 20,
+              "storage_device" => "DEFAULT",
             },
             {
               "disk_index" => 1,
@@ -57,6 +59,22 @@ RSpec.describe VmStats do
           ],
         },
       ))
+
+      rpc_response = {
+        "stats" => {
+          "queues" => [
+            {"bytes_read" => 500000, "bytes_written" => 300000, "read_ops" => 100, "write_ops" => 50},
+            {"bytes_read" => 400000, "bytes_written" => 200000, "read_ops" => 80, "write_ops" => 40},
+            {"bytes_read" => 300000, "bytes_written" => 100000, "read_ops" => 60, "write_ops" => 30},
+            {"bytes_read" => 200000, "bytes_written" => 50000, "read_ops" => 40, "write_ops" => 20},
+          ],
+        },
+      }
+      rpc_socket_path = "/var/storage/vmh6b1sz/0/rpc.sock"
+      expect(File).to receive(:exist?).with(rpc_socket_path).and_return(true)
+      ubiblk_rpc = instance_double(UbiblkRpc)
+      expect(UbiblkRpc).to receive(:new).with(rpc_socket_path).and_return(ubiblk_rpc)
+      expect(ubiblk_rpc).to receive(:stats).and_return(rpc_response)
 
       expect(vm_stats.collect).to eq(
         {
@@ -87,6 +105,12 @@ RSpec.describe VmStats do
             "io_stats" => {
               "read_bytes" => 1185382400,
               "write_bytes" => 5457008640,
+            },
+            "rpc_stats" => {
+              "read_bytes" => 1400000,
+              "write_bytes" => 650000,
+              "read_ops" => 280,
+              "write_ops" => 140,
             },
           },
         },
@@ -132,16 +156,56 @@ RSpec.describe VmStats do
       expect(File).to receive(:read).with("/vm/vmh6b1sz/prep.json").and_return(
         JSON.generate({
           "storage_volumes" => [
-            {"disk_index" => 0, "vhost_block_backend_version" => "v0.1", "queue_size" => 64, "num_queues" => 4, "size_gib" => 20},
+            {"disk_index" => 0, "vhost_block_backend_version" => "v0.1", "queue_size" => 64, "num_queues" => 4, "size_gib" => 20, "storage_device" => "DEFAULT"},
             {"disk_index" => 1},
-            {"disk_index" => 2, "vhost_block_backend_version" => "v0.1", "queue_size" => 128, "num_queues" => 2, "size_gib" => 40},
+            {"disk_index" => 2, "vhost_block_backend_version" => "v0.1", "queue_size" => 128, "num_queues" => 2, "size_gib" => 40, "storage_device" => "nvme0"},
           ],
         }),
       )
       expect(vm_stats.ubiblk_disks).to eq([
-        {"disk_index" => 0, "vhost_block_backend_version" => "v0.1", "queue_size" => 64, "num_queues" => 4, "size_gib" => 20},
-        {"disk_index" => 2, "vhost_block_backend_version" => "v0.1", "queue_size" => 128, "num_queues" => 2, "size_gib" => 40},
+        {"disk_index" => 0, "vhost_block_backend_version" => "v0.1", "queue_size" => 64, "num_queues" => 4, "size_gib" => 20, "storage_device" => "DEFAULT"},
+        {"disk_index" => 2, "vhost_block_backend_version" => "v0.1", "queue_size" => 128, "num_queues" => 2, "size_gib" => 40, "storage_device" => "nvme0"},
       ])
+    end
+  end
+
+  describe "#rpc_stats" do
+    it "returns nil when the rpc socket does not exist" do
+      expect(File).to receive(:exist?).with("/var/storage/vmh6b1sz/0/rpc.sock").and_return(false)
+      expect(vm_stats.rpc_stats("DEFAULT", 0)).to be_nil
+    end
+
+    it "returns nil when the rpc call fails" do
+      expect(File).to receive(:exist?).with("/var/storage/vmh6b1sz/0/rpc.sock").and_return(true)
+      ubiblk_rpc = instance_double(UbiblkRpc)
+      expect(UbiblkRpc).to receive(:new).with("/var/storage/vmh6b1sz/0/rpc.sock").and_return(ubiblk_rpc)
+      expect(ubiblk_rpc).to receive(:stats).and_raise(Errno::ECONNREFUSED)
+      expect(vm_stats.rpc_stats("DEFAULT", 0)).to be_nil
+    end
+
+    it "returns totals summed across all queues" do
+      expect(File).to receive(:exist?).with("/var/storage/devices/nvme0/vmh6b1sz/1/rpc.sock").and_return(true)
+      ubiblk_rpc = instance_double(UbiblkRpc)
+      expect(UbiblkRpc).to receive(:new).with("/var/storage/devices/nvme0/vmh6b1sz/1/rpc.sock").and_return(ubiblk_rpc)
+      expect(ubiblk_rpc).to receive(:stats).and_return({
+        "stats" => {
+          "queues" => [
+            {"bytes_read" => 1000, "bytes_written" => 2000, "read_ops" => 10, "write_ops" => 20},
+            {"bytes_read" => 3000, "bytes_written" => 4000, "read_ops" => 30, "write_ops" => 40},
+          ],
+        },
+      })
+      expect(vm_stats.rpc_stats("nvme0", 1)).to eq({
+        "read_bytes" => 4000,
+        "write_bytes" => 6000,
+        "read_ops" => 40,
+        "write_ops" => 60,
+      })
+    end
+
+    it "uses DEFAULT_STORAGE_DEVICE when storage_device is nil" do
+      expect(File).to receive(:exist?).with("/var/storage/vmh6b1sz/0/rpc.sock").and_return(false)
+      expect(vm_stats.rpc_stats(nil, 0)).to be_nil
     end
   end
 end

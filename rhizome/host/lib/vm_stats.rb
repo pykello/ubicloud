@@ -2,6 +2,8 @@
 
 require "json"
 require_relative "vm_path"
+require_relative "storage_path"
+require_relative "ubiblk_rpc"
 require_relative "../../common/lib/util"
 
 class VmStats
@@ -21,11 +23,17 @@ class VmStats
 
     ubiblk_disks.each do |disk|
       disk_index = disk["disk_index"]
-      result["disk_#{disk_index}"] = disk.except("disk_index").merge!(unit_stats(
+      disk_stats = disk.except("disk_index", "storage_device").merge!(unit_stats(
         "#{@vm_name}-#{disk_index}-storage",
         with_io: true,
         with_memory: true,
       ))
+
+      if (rpc = rpc_stats(disk["storage_device"], disk_index))
+        disk_stats["rpc_stats"] = rpc
+      end
+
+      result["disk_#{disk_index}"] = disk_stats
     end
 
     result
@@ -108,7 +116,28 @@ class VmStats
   def ubiblk_disks
     @ubiblk_disks ||= vm_params.fetch("storage_volumes").filter_map do |sv|
       next unless sv["vhost_block_backend_version"]
-      sv.slice("disk_index", "vhost_block_backend_version", "num_queues", "queue_size", "size_gib")
+      sv.slice("disk_index", "vhost_block_backend_version", "num_queues", "queue_size", "size_gib", "storage_device")
     end
+  end
+
+  def rpc_stats(storage_device, disk_index)
+    sp = StoragePath.new(@vm_name, storage_device || DEFAULT_STORAGE_DEVICE, disk_index)
+    socket_path = sp.rpc_socket_path
+    return nil unless File.exist?(socket_path)
+
+    response = UbiblkRpc.new(socket_path).stats
+    queues = response.dig("stats", "queues") || []
+
+    totals = {"read_bytes" => 0, "write_bytes" => 0, "read_ops" => 0, "write_ops" => 0}
+    queues.each do |q|
+      totals["read_bytes"] += q["bytes_read"]
+      totals["write_bytes"] += q["bytes_written"]
+      totals["read_ops"] += q["read_ops"]
+      totals["write_ops"] += q["write_ops"]
+    end
+
+    totals
+  rescue => e
+    nil
   end
 end
