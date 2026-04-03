@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
 require_relative "spdk_path"
+require_relative "unix_socket_rpc"
 
 class SpdkRpc
+  include UnixSocketRpc
   def initialize(socket_path, timeout = 5, response_size_limit = 1048576)
     @socket_path = socket_path
     @timeout = timeout
@@ -115,53 +117,12 @@ class SpdkRpc
       id: id,
     }
 
-    unix_socket = UNIXSocket.new(@socket_path)
-    unix_socket.write_nonblock(payload.to_json + "\n")
-
-    response = JSON.parse(read_response(unix_socket))
+    response = send_request(payload)
     if (err = response["error"])
       raise SpdkRpcError.build(err.fetch("message"), err.fetch("code"))
     end
 
-    unix_socket.close
-
     response["result"]
-  end
-
-  def read_response(socket)
-    buffer = +""
-    start_time = Time.now
-
-    begin
-      # Use IO.select to wait for data with a timeout. Subtract elapsed time,
-      # since this can be called multiple times.
-      elapsed_time = Time.now - start_time
-      ready_sockets = IO.select([socket], nil, nil, @timeout - elapsed_time)
-
-      # If ready_sockets is nil, it means timeout occurred
-      unless ready_sockets
-        socket.close
-        raise "The request timed out after #{@timeout} seconds."
-      end
-
-      # Loop until the whole JSON response is received.
-      loop do
-        buffer << socket.read_nonblock(4096)
-        break if valid_json?(buffer)
-        raise "Response size limit exceeded." if buffer.length > @response_size_limit
-      end
-    rescue IO::WaitReadable
-      retry
-    end
-
-    buffer
-  end
-
-  def valid_json?(json_str)
-    JSON.parse(json_str)
-    true
-  rescue JSON::ParserError
-    false
   end
 end
 

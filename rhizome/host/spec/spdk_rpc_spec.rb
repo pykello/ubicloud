@@ -251,6 +251,7 @@ RSpec.describe SpdkRpc do
       }.to_json
       expect(unix_socket).to receive(:write_nonblock)
       expect(sr).to receive(:read_response).with(unix_socket).and_return(response)
+      expect(unix_socket).to receive(:close)
       expect { sr.call("url", params) }.to raise_error SpdkRpcError, "an error happened"
     end
   end
