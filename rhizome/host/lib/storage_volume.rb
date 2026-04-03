@@ -77,6 +77,7 @@ class StorageVolume
     encryption_key = setup_data_encryption_key(key_wrapping_secrets)
 
     if @vhost_backend_version
+      verify_imaged_disk_size if @image_path
       create_empty_disk_file
       prep_vhost_backend(encryption_key, key_wrapping_secrets)
       return
@@ -115,6 +116,7 @@ class StorageVolume
 
   def write_new_file(path, user)
     rm_if_exists(path)
+    rm_if_exists(path + ".tmp")
 
     safe_write_to_file(path) do |file|
       File.chmod(0o600, file.path)
