@@ -179,6 +179,7 @@ class StorageVolume
     if @archive_source
       restrict_address_families = "AF_UNIX AF_INET AF_INET6"
       private_network = "no"
+      ip_address_deny = ""
     else
       restrict_address_families = "AF_UNIX"
       private_network = "yes"
