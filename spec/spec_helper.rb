@@ -170,13 +170,16 @@ RSpec.configure do |config|
   RSpec::Matchers.define :hop do |expected_label, expected_prog|
     supports_block_expectations
 
+    chain(:with) { |frame| @expected_frame = frame }
+
     match do |block|
       block.call
       false
     rescue Prog::Base::Hop => hop
       @hop = hop
       (expected_label.nil? || hop.new_label == expected_label) &&
-        ((expected_prog.nil? && hop.old_prog == hop.new_prog) || hop.new_prog == expected_prog)
+        ((expected_prog.nil? && hop.old_prog == hop.new_prog) || hop.new_prog == expected_prog) &&
+        (!@expected_frame || hop.strand_update_args[:stack].first >= @expected_frame)
     end
 
     failure_message do
@@ -192,30 +195,6 @@ RSpec.configure do |config|
     def default_prog(new_prog)
       prog = new_prog || @hop&.old_prog
       prog.nil? ? "" : "#{prog}#"
-    end
-  end
-
-  # Custom matcher to expect Progs to push a new prog
-  RSpec::Matchers.define :push do |expected_prog, expected_label|
-    supports_block_expectations
-
-    chain :with do |expected_frame|
-      @expected_frame = expected_frame
-    end
-
-    match do |block|
-      block.call
-      false
-    rescue Prog::Base::Hop => hop
-      @hop = hop
-      hop.new_prog == expected_prog &&
-        hop.new_label == (expected_label || "start") &&
-        (!@expected_frame || hop.strand_update_args[:stack].first >= @expected_frame)
-    end
-
-    failure_message do
-      "expected: push #{expected_prog}##{expected_label || "start"}\n" \
-        "     got: #{@hop || "not hopped"}"
     end
   end
 
