@@ -721,6 +721,14 @@ module Scheduling::Allocator
           allocate_boot_image(vm_host, volume["image"])
         end
 
+        if (miv_id = volume["machine_image_version_id"])
+          # Lock for update & check enabled to ensure the version doesn't get
+          # scheduled for deletion while we are allocating a storage volume
+          # based on it.
+          mivm = MachineImageVersionMetal.where(id: miv_id).for_update.first
+          fail "machine image version #{miv_id} is not available" unless mivm&.enabled
+        end
+
         VmStorageVolume.create(
           vm_id: vm.id,
           boot: volume["boot"],

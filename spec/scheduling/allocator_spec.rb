@@ -998,6 +998,34 @@ RSpec.describe Al do
       expect(vm.vm_storage_volumes.first.machine_image_version_id).to eq(miv.id)
     end
 
+    it "fails allocation when machine_image_version_id is set but the version is not enabled" do
+      create_vhost_block_backend(vm_host_id: VmHost.first.id, version: "v0.4.0", allocation_weight: 100)
+      vm = create_vm
+      miv = create_machine_image_version_metal
+      miv.update(enabled: false)
+      vol = [{
+        "size_gib" => 5, "use_bdev_ubi" => false, "encrypted" => false,
+        "boot" => true, "machine_image_version_id" => miv.id,
+        "vring_workers" => 1,
+      }]
+      BootImage.dataset.destroy
+      expect { described_class.allocate(vm, vol) }.to raise_error(RuntimeError, /machine image version .* is not available/)
+    end
+
+    it "fails allocation when machine_image_version_id is set but the machine image version has been deleted" do
+      create_vhost_block_backend(vm_host_id: VmHost.first.id, version: "v0.4.0", allocation_weight: 100)
+      vm = create_vm
+      miv = create_machine_image_version_metal
+      vol = [{
+        "size_gib" => 5, "use_bdev_ubi" => false, "encrypted" => false,
+        "boot" => true, "machine_image_version_id" => miv.id,
+        "vring_workers" => 1,
+      }]
+      miv.destroy
+      BootImage.dataset.destroy
+      expect { described_class.allocate(vm, vol) }.to raise_error(RuntimeError, /machine image version .* is not available/)
+    end
+
     it "fails allocation when machine_image_version_id is set but no host has vhost block backend v0.4.0+" do
       vm = create_vm
       miv = create_machine_image_version_metal
