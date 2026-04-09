@@ -183,6 +183,15 @@ class Vm < Sequel::Model
 
     def create_storage_volumes(storage_volume_params)
       storage_volume_params.each_with_index do |params, index|
+        if (miv_id = params[:machine_image_version_id])
+          # Lock for share before checking for enabled, so it conflicts with the
+          # lock in MachineImage::DestroyVersionMetal.assemble acquired when updating
+          # enabled to false. This is to serialize the check and update transactions and
+          # prevent race conditions.
+          mivm = MachineImageVersionMetal.where(id: miv_id).for_share.first
+          fail "machine image version #{miv_id} is not available" unless mivm&.enabled
+        end
+
         key_encryption_key = nil
         # Some tests create VMs with two storage volumes, and the shape of
         # StorageKeyEncryptionKey creation query will be the same for both. So,
