@@ -154,6 +154,7 @@ class Prog::Vm::Nexus < Prog::Base
         end
         "Vm::Aws::Nexus"
       else
+        vm.create_storage_volumes(storage_volumes)
         "Vm::Metal::Nexus"
       end
 
