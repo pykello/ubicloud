@@ -3,6 +3,7 @@
 require_relative "../lib/storage_volume"
 require "openssl"
 require "base64"
+require "tmpdir"
 
 RSpec.describe StorageVolume do
   let(:encrypted_sv) {
@@ -73,6 +74,17 @@ RSpec.describe StorageVolume do
     allow(encrypted_sv).to receive(:rpc_client).and_return(rpc_client)
   end
 
+  shared_context "vhost with tmpdir" do
+    let(:tmpdir) { Dir.mktmpdir }
+    after { FileUtils.rm_rf(tmpdir) }
+    before { allow(FileUtils).to receive(:chown) }
+
+    def redirect_to_tmpdir(sv)
+      allow(sv.sp).to receive(:device_path).and_return(tmpdir)
+      FileUtils.mkdir_p(sv.storage_dir)
+    end
+  end
+
   it "raises error if trying to create unencrypted non-read-only volume" do
     expect { described_class.new("test", {"encrypted" => false}) }.to raise_error RuntimeError, "unencrypted non-read-only volumes are not supported"
   end
@@ -117,15 +129,14 @@ RSpec.describe StorageVolume do
     end
 
     it "can prep an encrypted imaged disk with vhost backend" do
-      encryption_key = "test_key"
-      key_wrapping_secrets = "key_wrapping_secrets"
-      expect(FileUtils).to receive(:mkdir_p).with("/var/storage/test/2")
-      expect(FileUtils).to receive(:chown).with("test", "test", "/var/storage/test/2")
-      expect(File).to receive(:exist?).with("/var/storage").and_return(true)
-      expect(encrypted_vhost_sv).to receive(:generate_data_encryption_key).and_return(encryption_key)
-      expect(encrypted_vhost_sv).to receive(:create_empty_disk_file)
-      expect(encrypted_vhost_sv).to receive(:prep_vhost_backend).with(encryption_key, key_wrapping_secrets)
-      encrypted_vhost_sv.prep(key_wrapping_secrets)
+      Dir.mktmpdir do |tmpdir|
+        allow(encrypted_vhost_sv.sp).to receive(:device_path).and_return(tmpdir)
+        allow(FileUtils).to receive(:chown)
+        allow(encrypted_vhost_sv).to receive(:r).with(/setfacl/)
+        expect(encrypted_vhost_sv).to receive(:prep_vhost_backend)
+        encrypted_vhost_sv.prep("key_wrapping_secrets")
+        expect(File.size(encrypted_vhost_sv.disk_file)).to eq(12 * 1024 * 1024 * 1024)
+      end
     end
 
     it "fails to prep a read-only volume" do
@@ -390,54 +401,34 @@ RSpec.describe StorageVolume do
       }
     }
 
+    include_context "vhost with tmpdir"
+
     it "can create vhost backend config" do
-      config_path = "/var/storage/test/2/vhost-backend.conf"
-      f = instance_double(File)
-      allow(f).to receive(:path).and_return(config_path)
-      expect(encrypted_vhost_sv).to receive(:safe_write_to_file).with(config_path).and_yield(f)
-      expect(FileUtils).to receive(:chown).with("test", "test", config_path)
-      expect(File).to receive(:chmod).with(0o600, config_path)
-      expect(f).to receive(:write).with(/image_path/)
-      expect(encrypted_vhost_sv).to receive(:fsync_or_fail).with(f)
-      expect(encrypted_vhost_sv).to receive(:sync_parent_dir).with(config_path)
-      expect(encrypted_vhost_sv).to receive(:write_through_device?).and_return(true)
+      redirect_to_tmpdir(encrypted_vhost_sv)
+      allow(encrypted_vhost_sv).to receive(:write_through_device?).and_return(true)
       encrypted_vhost_sv.vhost_backend_create_config(encryption_key, key_wrapping_secrets)
+      config = YAML.safe_load(File.read(encrypted_vhost_sv.sp.vhost_backend_config))
+      expect(config).to include("image_path" => encrypted_vhost_sv.image_path, "num_queues" => 4, "queue_size" => 128)
+      expect(File.stat(encrypted_vhost_sv.sp.vhost_backend_config).mode & 0o777).to eq(0o600)
     end
 
     it "creates v2 config files for v0.4.0" do
-      expect(encrypted_vhost_v2_sv).to receive(:write_through_device?).and_return(true)
-      expect(encrypted_vhost_v2_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-stripe-source.conf", /\[stripe_source\]/)
-      expect(encrypted_vhost_v2_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-secrets.conf", satisfy { |content|
-          lines = content.split("\n")
-          lines.include?("[secrets.xts-key]") &&
-            lines.include?("[secrets.kek]")
-        })
-      expect(encrypted_vhost_v2_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend.conf", satisfy { |content|
-          lines = content.split("\n")
-          lines.include?("include = [\"vhost-backend-stripe-source.conf\", \"vhost-backend-secrets.conf\"]") &&
-            lines.include?("[device]") &&
-            lines.include?("[tuning]") &&
-            !lines.include?("[danger_zone]")
-        })
-
+      redirect_to_tmpdir(encrypted_vhost_v2_sv)
+      allow(encrypted_vhost_v2_sv).to receive(:write_through_device?).and_return(true)
       encrypted_vhost_v2_sv.vhost_backend_create_config(encryption_key, key_wrapping_secrets)
+      config = File.read(encrypted_vhost_v2_sv.sp.vhost_backend_config)
+      expect(config).to include("vhost-backend-stripe-source.conf", "vhost-backend-secrets.conf",
+        "[device]", "[tuning]")
+      expect(config).not_to include("[danger_zone]")
+      expect(File.read(encrypted_vhost_v2_sv.sp.vhost_backend_stripe_source_config)).to include("[stripe_source]")
+      expect(File.read(encrypted_vhost_v2_sv.sp.vhost_backend_secrets_config)).to include("[secrets.xts-key]", "[secrets.kek]")
     end
 
     it "writes cpu pinning as integer values in v2 config" do
-      expect(encrypted_vhost_v2_with_cpus_sv).to receive(:write_through_device?).and_return(true)
-      expect(encrypted_vhost_v2_with_cpus_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-stripe-source.conf", /\[stripe_source\]/)
-      expect(encrypted_vhost_v2_with_cpus_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend.conf", satisfy { |content|
-          content.include?("cpus = [0, 1]")
-        })
-      expect(encrypted_vhost_v2_with_cpus_sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-secrets.conf", /\[secrets.xts-key\]/)
-
+      redirect_to_tmpdir(encrypted_vhost_v2_with_cpus_sv)
+      allow(encrypted_vhost_v2_with_cpus_sv).to receive(:write_through_device?).and_return(true)
       encrypted_vhost_v2_with_cpus_sv.vhost_backend_create_config(encryption_key, key_wrapping_secrets)
+      expect(File.read(encrypted_vhost_v2_with_cpus_sv.sp.vhost_backend_config)).to include("cpus = [0, 1]")
     end
 
     it "writes v2 config with archive source" do
@@ -457,39 +448,19 @@ RSpec.describe StorageVolume do
           "encrypted_archive_kek" => "encrypted_archive_kek_value",
         },
       })
-
-      expect(sv).to receive(:write_through_device?).and_return(true)
-      expect(sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-stripe-source.conf", satisfy { |content|
-          lines = content.split("\n")
-          lines.include?("[stripe_source]") &&
-          lines.include?("type = \"archive\"") &&
-          lines.include?("bucket = \"ubicloud-images\"") &&
-          lines.include?("prefix = \"pjxdr4fz9wep6h6ep3v4ygywh2/m105t00wekty2n68cvez4spq6t/1.0\"") &&
-          lines.include?("region = \"auto\"") &&
-          lines.include?("endpoint = \"https://accountid.eu.r2.cloudflarestorage.com\"") &&
-          lines.include?("access_key_id.ref = \"archive-access-key\"") &&
-          lines.include?("secret_access_key.ref = \"archive-secret-key\"") &&
-          lines.include?("archive_kek.ref = \"archive-kek\"")
-        })
-      expect(sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend-secrets.conf", satisfy { |content|
-          lines = content.split("\n")
-          lines.include?("[secrets.archive-access-key]") &&
-          lines.include?("source.inline = \"encrypted_access_key_id_value\"") &&
-          lines.include?("[secrets.archive-secret-key]") &&
-          lines.include?("source.inline = \"encrypted_secret_access_key_value\"") &&
-          lines.include?("[secrets.archive-kek]") &&
-          lines.include?("source.inline = \"encrypted_archive_kek_value\"")
-        })
-      expect(sv).to receive(:write_config_file)
-        .with("/var/storage/test/2/vhost-backend.conf", satisfy { |content|
-          content.split("\n")
-          lines = content.split("\n")
-          lines.include?("[device]") &&
-          lines.include?("[tuning]")
-        })
+      redirect_to_tmpdir(sv)
+      allow(sv).to receive(:write_through_device?).and_return(true)
       sv.vhost_backend_create_config(encryption_key, key_wrapping_secrets)
+
+      stripe = File.read(sv.sp.vhost_backend_stripe_source_config)
+      expect(stripe).to include("[stripe_source]", 'type = "archive"', 'bucket = "ubicloud-images"',
+        'region = "auto"', 'access_key_id.ref = "archive-access-key"',
+        'secret_access_key.ref = "archive-secret-key"', 'archive_kek.ref = "archive-kek"')
+      secrets = File.read(sv.sp.vhost_backend_secrets_config)
+      expect(secrets).to include("[secrets.archive-access-key]", 'source.inline = "encrypted_access_key_id_value"',
+        "[secrets.archive-secret-key]", 'source.inline = "encrypted_secret_access_key_value"',
+        "[secrets.archive-kek]", 'source.inline = "encrypted_archive_kek_value"')
+      expect(File.read(sv.sp.vhost_backend_config)).to include("[device]", "[tuning]")
     end
   end
 
@@ -520,26 +491,14 @@ RSpec.describe StorageVolume do
   end
 
   describe "#vhost_backend_create_metadata" do
+    include_context "vhost with tmpdir"
+
     it "can create vhost backend metadata" do
-      algorithm = "aes-256-gcm"
-      cipher = OpenSSL::Cipher.new(algorithm)
-      key_wrapping_secrets = {
-        "algorithm" => algorithm,
-        "key" => Base64.encode64(cipher.random_key),
-        "init_vector" => Base64.encode64(cipher.random_iv),
-        "auth_data" => "Ubicloud-Test-Auth",
-      }
-      metadata_path = "/var/storage/test/2/metadata"
-      f = instance_double(File)
-      allow(f).to receive(:path).and_return(metadata_path)
-      expect(encrypted_vhost_sv).to receive(:rm_if_exists).with(metadata_path)
-      expect(encrypted_vhost_sv).to receive(:safe_write_to_file).with(metadata_path).and_yield(f)
-      expect(FileUtils).to receive(:chown).with("test", "test", metadata_path)
-      expect(File).to receive(:chmod).with(0o600, metadata_path)
-      expect(f).to receive(:truncate).with(8 * 1024 * 1024)
-      expect(encrypted_vhost_sv).to receive(:vhost_backend_create_encrypted_metadata).with(key_wrapping_secrets)
-      allow(encrypted_vhost_sv).to receive(:sync_parent_dir).with(metadata_path)
-      encrypted_vhost_sv.vhost_backend_create_metadata(key_wrapping_secrets)
+      redirect_to_tmpdir(encrypted_vhost_sv)
+      expect(encrypted_vhost_sv).to receive(:vhost_backend_create_encrypted_metadata)
+      encrypted_vhost_sv.vhost_backend_create_metadata("key_wrapping_secrets")
+      expect(File.size(encrypted_vhost_sv.sp.vhost_backend_metadata)).to eq(8 * 1024 * 1024)
+      expect(File.stat(encrypted_vhost_sv.sp.vhost_backend_metadata).mode & 0o777).to eq(0o600)
     end
   end
 
