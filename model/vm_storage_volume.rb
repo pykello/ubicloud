@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "../model"
+require "json"
 
 class VmStorageVolume < Sequel::Model
   many_to_one :vm
@@ -53,6 +54,20 @@ class VmStorageVolume < Sequel::Model
       # SPDK volumes
       256
     end
+  end
+
+  def path
+    @path ||= File.join(storage_device.path, vm.inhost_name, disk_index.to_s).to_s
+  end
+
+  def rpc(payload)
+    rpc_socket = File.join(path, "rpc.sock").to_s
+    JSON.parse(vm.vm_host.sshable.cmd("echo :payload | sudo nc -U :rpc_socket -w 1 | head -n 1", payload: payload.to_json, rpc_socket:))
+  end
+
+  def caught_up?
+    stripes = rpc(command: "status").dig("status", "stripes")
+    stripes.fetch("fetched") == stripes.fetch("source")
   end
 end
 

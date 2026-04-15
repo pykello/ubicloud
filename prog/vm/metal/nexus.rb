@@ -197,6 +197,25 @@ class Prog::Vm::Metal::Nexus < Prog::Base
     vm.update(display_state: "running", provisioned_at: Time.now)
     Clog.emit("vm provisioned", [vm, {provision: {vm_ubid: vm.ubid, vm_host_ubid: host.ubid, duration: (Time.now - vm.allocated_at).round(3)}}])
 
+    if vm.vm_storage_volumes.any?(&:machine_image_version_id)
+      register_deadline("wait", 1800, allow_extension: true)
+      hop_wait_storage_catchup
+    else
+      hop_wait
+    end
+  end
+
+  label def wait_storage_catchup
+    pending = vm.vm_storage_volumes.any? { |vol|
+      next false unless vol.machine_image_version_id
+      if vol.caught_up?
+        vol.update(machine_image_version_id: nil)
+        false
+      else
+        true
+      end
+    }
+    nap 30 if pending
     hop_wait
   end
 
