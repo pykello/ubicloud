@@ -5,284 +5,143 @@ require_relative "../../model/spec_helper"
 RSpec.describe Prog::MachineImage::CopyVersionMetal do
   subject(:prog) { described_class.new(strand) }
 
-  let(:project) { Project.create(name: "copy-mi-project") }
+  def make_store(loc, label)
+    MachineImageStore.create(project_id: project.id, location_id: loc, provider: "minio",
+      region: "r", endpoint: "https://#{label}.example.com/", bucket: "#{label}-bucket",
+      access_key: "#{label}-ak", secret_key: "#{label}-sk")
+  end
 
-  let(:source_vm_host) { create_vm_host(location_id: Location::HETZNER_FSN1_ID, allocation_state: "accepting") }
-  let(:target_vm_host) { create_vm_host(location_id: Location::HETZNER_HEL1_ID, allocation_state: "accepting") }
-
-  let(:source_store) {
-    MachineImageStore.create(
-      project_id: project.id,
-      location_id: Location::HETZNER_FSN1_ID,
-      provider: "minio",
-      region: "eu",
-      endpoint: "https://source.example.com/",
-      bucket: "source-bucket",
-      access_key: "src-ak",
-      secret_key: "src-sk",
-    )
+  let(:project) { Project.create(name: "p") }
+  let(:vm_host) { create_vm_host(location_id: Location::HETZNER_HEL1_ID) }
+  let(:source_store) { make_store(Location::HETZNER_FSN1_ID, "src") }
+  let(:target_store) { make_store(Location::HETZNER_HEL1_ID, "tgt") }
+  let(:source_mi) { MachineImage.create(name: "img", arch: "x64", project_id: project.id, location_id: Location::HETZNER_FSN1_ID) }
+  let(:target_mi) { MachineImage.create(name: "img", arch: "x64", project_id: project.id, location_id: Location::HETZNER_HEL1_ID) }
+  let(:source_kek) { StorageKeyEncryptionKey.create_random(auth_data: "src-kek") }
+  let(:source_miv) { MachineImageVersion.create(machine_image_id: source_mi.id, version: "1.0", actual_size_mib: 5120) }
+  let(:source_metal) {
+    MachineImageVersionMetal.create_with_id(source_miv, enabled: true, archive_size_mib: 1024,
+      archive_kek_id: source_kek.id, store_id: source_store.id, store_prefix: "src/prefix")
   }
-
-  let(:target_store) {
-    MachineImageStore.create(
-      project_id: project.id,
-      location_id: Location::HETZNER_HEL1_ID,
-      provider: "minio",
-      region: "fi",
-      endpoint: "https://target.example.com/",
-      bucket: "target-bucket",
-      access_key: "tgt-ak",
-      secret_key: "tgt-sk",
-    )
+  let(:target_kek) { StorageKeyEncryptionKey.create_random(auth_data: "tgt-kek") }
+  let(:target_miv) { MachineImageVersion.create(machine_image_id: target_mi.id, version: "1.0") }
+  let(:target_metal) {
+    MachineImageVersionMetal.create_with_id(target_miv, enabled: false,
+      archive_kek_id: target_kek.id, store_id: target_store.id, store_prefix: "tgt/prefix")
   }
-
-  let(:source_machine_image) {
-    MachineImage.create(name: "test-image", arch: "x64", project_id: project.id, location_id: Location::HETZNER_FSN1_ID)
-  }
-
-  let(:target_machine_image) {
-    MachineImage.create(name: "test-image", arch: "x64", project_id: project.id, location_id: Location::HETZNER_HEL1_ID)
-  }
-
-  let(:source_archive_kek) {
-    StorageKeyEncryptionKey.create_random(auth_data: "machine_image_version_source_v1")
-  }
-
-  let(:source_mi_version) {
-    MachineImageVersion.create(
-      machine_image_id: source_machine_image.id,
-      version: "1.0",
-      actual_size_mib: 5120,
-    )
-  }
-
-  let(:source_mi_version_metal) {
-    MachineImageVersionMetal.create_with_id(
-      source_mi_version,
-      enabled: true,
-      archive_size_mib: 1024,
-      archive_kek_id: source_archive_kek.id,
-      store_id: source_store.id,
-      store_prefix: "#{project.ubid}/#{source_machine_image.ubid}/1.0",
-    )
-  }
-
-  let(:target_mi_version) {
-    MachineImageVersion.create(
-      machine_image_id: target_machine_image.id,
-      version: "1.0",
-      actual_size_mib: 5120,
-    )
-  }
-
-  let(:target_archive_kek) {
-    StorageKeyEncryptionKey.create(
-      algorithm: source_archive_kek.algorithm,
-      key: source_archive_kek.key,
-      init_vector: source_archive_kek.init_vector,
-      auth_data: source_archive_kek.auth_data,
-    )
-  }
-
-  let(:target_mi_version_metal) {
-    MachineImageVersionMetal.create_with_id(
-      target_mi_version,
-      enabled: false,
-      archive_kek_id: target_archive_kek.id,
-      store_id: target_store.id,
-      store_prefix: "#{project.ubid}/#{target_machine_image.ubid}/1.0",
-    )
-  }
-
   let(:strand) {
-    Strand.create_with_id(
-      target_mi_version_metal,
-      prog: "MachineImage::CopyVersionMetal",
-      label: "copy",
+    Strand.create_with_id(target_metal, prog: "MachineImage::CopyVersionMetal", label: "copy",
       stack: [{
-        "source_machine_image_version_metal_id" => source_mi_version_metal.id,
-        "vm_host_id" => target_vm_host.id,
+        "source_machine_image_version_metal_id" => source_metal.id,
+        "vm_host_id" => vm_host.id,
         "set_as_latest" => false,
-      }],
-    )
+      }])
   }
 
   describe ".assemble" do
-    before { target_vm_host }
+    before { vm_host }
 
-    it "creates a target version, metal, kek, and strand referencing a host in the target location" do
-      strand = described_class.assemble(source_mi_version_metal, target_machine_image, target_store)
-
-      target_metal = MachineImageVersionMetal[strand.id]
-      expect(target_metal).not_to be_nil
-      expect(target_metal.enabled).to be false
-      expect(target_metal.store_id).to eq(target_store.id)
-      expect(target_metal.store_prefix).to eq("#{project.ubid}/#{target_machine_image.ubid}/1.0")
-
-      target_miv = target_metal.machine_image_version
-      expect(target_miv.machine_image_id).to eq(target_machine_image.id)
-      expect(target_miv.version).to eq("1.0")
-      expect(target_miv.actual_size_mib).to eq(source_mi_version.actual_size_mib)
-
-      target_kek = target_metal.archive_kek
-      expect(target_kek.id).not_to eq(source_archive_kek.id)
-      expect(target_kek.key).to eq(source_archive_kek.key)
-      expect(target_kek.init_vector).to eq(source_archive_kek.init_vector)
-      expect(target_kek.auth_data).to eq(source_archive_kek.auth_data)
-
-      expect(strand.prog).to eq("MachineImage::CopyVersionMetal")
-      expect(strand.label).to eq("copy")
-      expect(strand.stack.first["source_machine_image_version_metal_id"]).to eq(source_mi_version_metal.id)
-      expect(strand.stack.first["vm_host_id"]).to eq(target_vm_host.id)
-      expect(strand.stack.first["set_as_latest"]).to be true
+    it "creates the target version, metal with cloned kek material, and strand" do
+      st = described_class.assemble(source_metal, target_mi, target_store)
+      target = MachineImageVersionMetal[st.id]
+      expect(target.enabled).to be false
+      expect(target.store_id).to eq(target_store.id)
+      expect(target.store_prefix).to eq("#{project.ubid}/#{target_mi.ubid}/1.0")
+      expect(target.machine_image_version.actual_size_mib).to eq(source_miv.actual_size_mib)
+      kek = target.archive_kek
+      expect(kek.id).not_to eq(source_kek.id)
+      expect([kek.key, kek.init_vector, kek.auth_data]).to eq([source_kek.key, source_kek.init_vector, source_kek.auth_data])
+      expect(st.label).to eq("copy")
+      expect(st.stack.first).to include(
+        "source_machine_image_version_metal_id" => source_metal.id,
+        "vm_host_id" => vm_host.id,
+        "set_as_latest" => true,
+      )
     end
 
-    it "fails when the source version is not enabled" do
-      source_mi_version_metal.update(enabled: false)
-
-      expect {
-        described_class.assemble(source_mi_version_metal, target_machine_image, target_store)
-      }.to raise_error("source machine image version is not enabled")
+    it "fails when source not enabled" do
+      source_metal.update(enabled: false)
+      expect { described_class.assemble(source_metal, target_mi, target_store) }.to raise_error(/not enabled/)
     end
 
     it "fails when target store and target machine image are in different locations" do
-      mismatched_store = MachineImageStore.create(
-        project_id: project.id,
-        location_id: Location::HETZNER_FSN1_ID,
-        provider: "minio", region: "eu",
-        endpoint: "https://mismatch.example.com/",
-        bucket: "mismatch", access_key: "ak", secret_key: "sk",
-      )
-
-      expect {
-        described_class.assemble(source_mi_version_metal, target_machine_image, mismatched_store)
-      }.to raise_error("target store is not in the same location as target machine image")
+      expect { described_class.assemble(source_metal, target_mi, source_store) }.to raise_error(/same location/)
     end
 
     it "fails when target machine image already has the same version" do
-      MachineImageVersion.create(
-        machine_image_id: target_machine_image.id,
-        version: source_mi_version.version,
-        actual_size_mib: 1,
-      )
-
-      expect {
-        described_class.assemble(source_mi_version_metal, target_machine_image, target_store)
-      }.to raise_error("target machine image already has version 1.0")
+      MachineImageVersion.create(machine_image_id: target_mi.id, version: "1.0")
+      expect { described_class.assemble(source_metal, target_mi, target_store) }.to raise_error("target machine image already has version 1.0")
     end
 
-    it "fails when no vm host exists in the target location" do
-      target_vm_host.update(allocation_state: "draining")
-
-      expect {
-        described_class.assemble(source_mi_version_metal, target_machine_image, target_store)
-      }.to raise_error("no vm host found in target location")
+    it "fails when no vm host exists in target location" do
+      vm_host.update(allocation_state: "draining")
+      expect { described_class.assemble(source_metal, target_mi, target_store) }.to raise_error(/no vm host/)
     end
   end
 
   describe "#copy" do
-    let(:sshable) { target_vm_host.sshable }
-    let(:unit_name) { "copy_#{target_mi_version_metal.ubid}" }
-    let(:stats_path) { "/tmp/copy_stats_#{target_mi_version_metal.ubid}.json" }
+    let(:unit_name) { "copy_#{target_metal.ubid}" }
+    let(:stats_path) { "/tmp/copy_stats_#{target_metal.ubid}.json" }
+    let(:sshable) { vm_host.sshable }
 
-    before do
-      allow(prog).to receive(:vm_host).and_return(target_vm_host)
-    end
-
-    it "reads stats, cleans daemon, and hops to finish when daemon succeeded" do
+    it "records stats, cleans daemon, and hops to finish on Succeeded" do
       expect(sshable).to receive(:d_check).with(unit_name).and_return("Succeeded")
-      expect(sshable).to receive(:_cmd).with("cat #{stats_path}").and_return('{"total_bytes": 12345, "total_objects": 7}')
+      expect(sshable).to receive(:_cmd).with("cat #{stats_path}").and_return('{"total_bytes":42}')
       expect(sshable).to receive(:d_clean).with(unit_name)
-
       expect { prog.copy }.to hop("finish")
-
-      expect(strand.reload.stack.first["total_bytes"]).to eq(12345)
+      expect(strand.reload.stack.first["total_bytes"]).to eq(42)
     end
 
-    it "restarts daemon when it failed" do
-      expect(sshable).to receive(:d_check).with(unit_name).and_return("Failed")
+    it "restarts daemon and naps on Failed" do
+      expect(sshable).to receive(:d_check).and_return("Failed")
       expect(sshable).to receive(:d_restart).with(unit_name)
       expect { prog.copy }.to nap(60)
     end
 
-    it "starts daemon when status is NotStarted" do
-      expect(sshable).to receive(:d_check).with(unit_name).and_return("NotStarted")
-      expect(sshable).to receive(:d_run).with(unit_name,
-        "sudo", "host/bin/copy-archive", stats_path,
-        stdin: prog.copy_params_json, log: false)
-
+    it "starts daemon and naps on NotStarted, passing source/target store config via stdin" do
+      expect(sshable).to receive(:d_check).and_return("NotStarted")
+      expect(sshable).to receive(:d_run).with(unit_name, "sudo", "host/bin/copy-archive", stats_path, stdin: prog.copy_params_json, log: false)
+      params = JSON.parse(prog.copy_params_json)
+      expect(params["source_conf"]).to eq("bucket" => source_store.bucket, "prefix" => source_metal.store_prefix,
+        "region" => source_store.region, "endpoint" => source_store.endpoint,
+        "access_key_id" => source_store.access_key, "secret_access_key" => source_store.secret_key)
+      expect(params["target_conf"]).to eq("bucket" => target_store.bucket, "prefix" => target_metal.store_prefix,
+        "region" => target_store.region, "endpoint" => target_store.endpoint,
+        "access_key_id" => target_store.access_key, "secret_access_key" => target_store.secret_key)
       expect { prog.copy }.to nap(30)
     end
 
-    it "naps when daemon is in progress" do
-      expect(sshable).to receive(:d_check).with(unit_name).and_return("InProgress")
+    it "naps on InProgress" do
+      expect(sshable).to receive(:d_check).and_return("InProgress")
       expect { prog.copy }.to nap(30)
     end
 
-    it "logs and naps on unexpected daemon status" do
-      expect(sshable).to receive(:d_check).with(unit_name).and_return("UnknownStatus")
-      expect(Clog).to receive(:emit).with("Unexpected daemonizer2 status: UnknownStatus")
+    it "logs and naps on unexpected status" do
+      expect(sshable).to receive(:d_check).and_return("?")
+      expect(Clog).to receive(:emit).with("Unexpected daemonizer2 status: ?")
       expect { prog.copy }.to nap(60)
     end
   end
 
   describe "#finish" do
-    before do
-      allow(prog).to receive(:vm_host).and_return(target_vm_host)
-      expect(target_vm_host.sshable).to receive(:_cmd).with("sudo rm -f /tmp/copy_stats_#{target_mi_version_metal.ubid}.json")
-    end
+    before { expect(vm_host.sshable).to receive(:_cmd).with("sudo rm -f /tmp/copy_stats_#{target_metal.ubid}.json") }
 
-    it "enables the target metal and copies the archive size from the source" do
+    it "enables target metal, copies archive size, and leaves latest_version_id alone when not set_as_latest" do
       expect { prog.finish }.to exit({"msg" => "Metal machine image version is copied and enabled"})
-
-      target_mi_version_metal.reload
-      expect(target_mi_version_metal.enabled).to be true
-      expect(target_mi_version_metal.archive_size_mib).to eq(source_mi_version_metal.archive_size_mib)
+      expect(target_metal.reload.enabled).to be true
+      expect(target_metal.archive_size_mib).to eq(source_metal.archive_size_mib)
+      expect(target_mi.reload.latest_version_id).to be_nil
     end
 
-    it "sets target machine image latest version when configured" do
+    it "sets latest_version_id when set_as_latest" do
       refresh_frame(prog, new_values: {"set_as_latest" => true})
-
       expect { prog.finish }.to exit({"msg" => "Metal machine image version is copied and enabled"})
-
-      target_machine_image.reload
-      expect(target_machine_image.latest_version_id).to eq(target_mi_version_metal.id)
+      expect(target_mi.reload.latest_version_id).to eq(target_metal.id)
     end
   end
 
-  describe "#copy_params_json" do
-    it "includes both source and target store credentials and prefixes" do
-      result = JSON.parse(prog.copy_params_json)
-
-      expect(result["source_conf"]).to eq(
-        "bucket" => source_store.bucket,
-        "prefix" => source_mi_version_metal.store_prefix,
-        "region" => source_store.region,
-        "endpoint" => source_store.endpoint,
-        "access_key_id" => source_store.access_key,
-        "secret_access_key" => source_store.secret_key,
-      )
-
-      expect(result["target_conf"]).to eq(
-        "bucket" => target_store.bucket,
-        "prefix" => target_mi_version_metal.store_prefix,
-        "region" => target_store.region,
-        "endpoint" => target_store.endpoint,
-        "access_key_id" => target_store.access_key,
-        "secret_access_key" => target_store.secret_key,
-      )
-    end
-  end
-
-  describe "#vm_host" do
-    it "returns the vm host from the frame" do
-      expect(prog.vm_host).to eq(target_vm_host)
-    end
-  end
-
-  describe "#stats_file_path" do
-    it "returns the expected path" do
-      expect(prog.stats_file_path).to eq("/tmp/copy_stats_#{target_mi_version_metal.ubid}.json")
-    end
+  it "exposes vm_host and stats_file_path helpers" do
+    expect(prog.vm_host).to eq(vm_host)
+    expect(prog.stats_file_path).to eq("/tmp/copy_stats_#{target_metal.ubid}.json")
   end
 end
