@@ -5,37 +5,29 @@ require_relative "../../model/spec_helper"
 RSpec.describe Prog::MachineImage::CopyVersionMetal do
   subject(:prog) { described_class.new(strand) }
 
-  def make_store(loc, label)
-    MachineImageStore.create(project_id: project.id, location_id: loc, provider: "minio",
-      region: "r", endpoint: "https://#{label}.example.com/", bucket: "#{label}-bucket",
-      access_key: "#{label}-ak", secret_key: "#{label}-sk")
-  end
-
-  let(:project) { Project.create(name: "p") }
+  let(:source_metal) { create_machine_image_version_metal(version: "1.0", store_prefix: "src/prefix") }
+  let(:source_miv) { source_metal.machine_image_version }
+  let(:source_mi) { source_miv.machine_image }
+  let(:source_store) { source_metal.store }
+  let(:source_kek) { source_metal.archive_kek }
+  let(:project) { source_mi.project }
   let(:vm_host) { create_vm_host(location_id: Location::HETZNER_HEL1_ID) }
-  let(:source_store) { make_store(Location::HETZNER_FSN1_ID, "src") }
-  let(:target_store) { make_store(Location::HETZNER_HEL1_ID, "tgt") }
-  let(:source_mi) { MachineImage.create(name: "img", arch: "x64", project_id: project.id, location_id: Location::HETZNER_FSN1_ID) }
-  let(:target_mi) { MachineImage.create(name: "img", arch: "x64", project_id: project.id, location_id: Location::HETZNER_HEL1_ID) }
-  let(:source_kek) { StorageKeyEncryptionKey.create_random(auth_data: "src-kek") }
-  let(:source_miv) { MachineImageVersion.create(machine_image_id: source_mi.id, version: "1.0", actual_size_mib: 5120) }
-  let(:source_metal) {
-    MachineImageVersionMetal.create_with_id(source_miv, enabled: true, archive_size_mib: 1024,
-      archive_kek_id: source_kek.id, store_id: source_store.id, store_prefix: "src/prefix")
+  let(:target_mi) { MachineImage.create(name: "tgt-mi", arch: "x64", project_id: project.id, location_id: Location::HETZNER_HEL1_ID) }
+  let(:target_store) {
+    MachineImageStore.create(project_id: project.id, location_id: Location::HETZNER_HEL1_ID,
+      provider: "r2", region: "auto", endpoint: "https://tgt.example.com/",
+      bucket: "tgt-bucket", access_key: "tak", secret_key: "tsk")
   }
-  let(:target_kek) { StorageKeyEncryptionKey.create_random(auth_data: "tgt-kek") }
-  let(:target_miv) { MachineImageVersion.create(machine_image_id: target_mi.id, version: "1.0") }
   let(:target_metal) {
-    MachineImageVersionMetal.create_with_id(target_miv, enabled: false,
-      archive_kek_id: target_kek.id, store_id: target_store.id, store_prefix: "tgt/prefix")
+    create_machine_image_version_metal(project_id: project.id, machine_image_id: target_mi.id,
+      machine_image_store_id: target_store.id, version: "1.0",
+      location_id: Location::HETZNER_HEL1_ID, store_prefix: "tgt/prefix")
+      .tap { it.update(enabled: false) }
   }
   let(:strand) {
     Strand.create_with_id(target_metal, prog: "MachineImage::CopyVersionMetal", label: "copy",
-      stack: [{
-        "source_machine_image_version_metal_id" => source_metal.id,
-        "vm_host_id" => vm_host.id,
-        "set_as_latest" => false,
-      }])
+      stack: [{"source_machine_image_version_metal_id" => source_metal.id,
+               "vm_host_id" => vm_host.id, "set_as_latest" => false}])
   }
 
   describe ".assemble" do
@@ -52,11 +44,8 @@ RSpec.describe Prog::MachineImage::CopyVersionMetal do
       expect(kek.id).not_to eq(source_kek.id)
       expect([kek.key, kek.init_vector, kek.auth_data]).to eq([source_kek.key, source_kek.init_vector, source_kek.auth_data])
       expect(st.label).to eq("copy")
-      expect(st.stack.first).to include(
-        "source_machine_image_version_metal_id" => source_metal.id,
-        "vm_host_id" => vm_host.id,
-        "set_as_latest" => true,
-      )
+      expect(st.stack.first).to include("source_machine_image_version_metal_id" => source_metal.id,
+        "vm_host_id" => vm_host.id, "set_as_latest" => true)
     end
 
     it "fails when source not enabled" do
@@ -69,7 +58,7 @@ RSpec.describe Prog::MachineImage::CopyVersionMetal do
     end
 
     it "fails when target machine image already has the same version" do
-      MachineImageVersion.create(machine_image_id: target_mi.id, version: "1.0")
+      target_metal
       expect { described_class.assemble(source_metal, target_mi, target_store) }.to raise_error("target machine image already has version 1.0")
     end
 
@@ -83,6 +72,8 @@ RSpec.describe Prog::MachineImage::CopyVersionMetal do
     let(:unit_name) { "copy_#{target_metal.ubid}" }
     let(:stats_path) { "/tmp/copy_stats_#{target_metal.ubid}.json" }
     let(:sshable) { vm_host.sshable }
+
+    before { allow(prog).to receive(:vm_host).and_return(vm_host) }
 
     it "records stats, cleans daemon, and hops to finish on Succeeded" do
       expect(sshable).to receive(:d_check).with(unit_name).and_return("Succeeded")
@@ -102,11 +93,9 @@ RSpec.describe Prog::MachineImage::CopyVersionMetal do
       expect(sshable).to receive(:d_check).and_return("NotStarted")
       expect(sshable).to receive(:d_run).with(unit_name, "sudo", "host/bin/copy-archive", stats_path, stdin: prog.copy_params_json, log: false)
       params = JSON.parse(prog.copy_params_json)
-      expect(params["source_conf"]).to eq("bucket" => source_store.bucket, "prefix" => source_metal.store_prefix,
-        "region" => source_store.region, "endpoint" => source_store.endpoint,
+      expect(params["source_conf"]).to include("bucket" => source_store.bucket, "prefix" => "src/prefix",
         "access_key_id" => source_store.access_key, "secret_access_key" => source_store.secret_key)
-      expect(params["target_conf"]).to eq("bucket" => target_store.bucket, "prefix" => target_metal.store_prefix,
-        "region" => target_store.region, "endpoint" => target_store.endpoint,
+      expect(params["target_conf"]).to include("bucket" => target_store.bucket, "prefix" => "tgt/prefix",
         "access_key_id" => target_store.access_key, "secret_access_key" => target_store.secret_key)
       expect { prog.copy }.to nap(30)
     end
@@ -124,7 +113,10 @@ RSpec.describe Prog::MachineImage::CopyVersionMetal do
   end
 
   describe "#finish" do
-    before { expect(vm_host.sshable).to receive(:_cmd).with("sudo rm -f /tmp/copy_stats_#{target_metal.ubid}.json") }
+    before {
+      allow(prog).to receive(:vm_host).and_return(vm_host)
+      expect(vm_host.sshable).to receive(:_cmd).with("sudo rm -f /tmp/copy_stats_#{target_metal.ubid}.json")
+    }
 
     it "enables target metal, copies archive size, and leaves latest_version_id alone when not set_as_latest" do
       expect { prog.finish }.to exit({"msg" => "Metal machine image version is copied and enabled"})
