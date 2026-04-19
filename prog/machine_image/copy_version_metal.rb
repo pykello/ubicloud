@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "aws-sdk-s3"
+require "json"
 
 class Prog::MachineImage::CopyVersionMetal < Prog::Base
   subject_is :machine_image_version_metal
@@ -14,6 +14,12 @@ class Prog::MachineImage::CopyVersionMetal < Prog::Base
     if MachineImageVersion.where(machine_image_id: target_machine_image.id, version: source_miv.version).any?
       fail "target machine image already has version #{source_miv.version}"
     end
+
+    vm_host = VmHost
+      .where(location_id: target_machine_image.location_id, allocation_state: "accepting")
+      .order { random.function }
+      .first
+    fail "no vm host found in target location" unless vm_host
 
     DB.transaction do
       target_miv = MachineImageVersion.create(
@@ -43,51 +49,48 @@ class Prog::MachineImage::CopyVersionMetal < Prog::Base
 
       Strand.create_with_id(target_miv,
         prog: "MachineImage::CopyVersionMetal",
-        label: "copy_objects",
+        label: "copy",
         stack: [{
           "source_machine_image_version_metal_id" => source_machine_image_version_metal.id,
+          "vm_host_id" => vm_host.id,
           "set_as_latest" => set_as_latest,
         }])
     end
   end
 
-  label def copy_objects
-    register_deadline(nil, [source_machine_image_version_metal.archive_size_mib.to_i / 10, 600].max)
+  label def copy
+    register_deadline(nil, [source_machine_image_version_metal.archive_size_mib.to_i / 5, 3600].max)
 
-    list_kwargs = {
-      bucket: source_store.bucket,
-      prefix: source_machine_image_version_metal.store_prefix,
-      max_keys: 100,
-    }
-    if (token = frame["continuation_token"])
-      list_kwargs[:continuation_token] = token
-    end
+    unit_name = "copy_#{machine_image_version_metal.ubid}"
+    sshable = vm_host.sshable
 
-    page = source_s3_client.list_objects_v2(**list_kwargs)
-
-    page.contents.each do |obj|
-      relative_key = obj.key.delete_prefix("#{source_machine_image_version_metal.store_prefix}/")
-      target_key = "#{machine_image_version_metal.store_prefix}/#{relative_key}"
-
-      response = source_s3_client.get_object(bucket: source_store.bucket, key: obj.key)
-      target_s3_client.put_object(
-        bucket: target_store.bucket,
-        key: target_key,
-        body: response.body,
-        content_length: obj.size,
-      )
-    end
-
-    if page.is_truncated
-      update_stack("continuation_token" => page.next_continuation_token)
-      nap 0
-    else
-      delete_from_stack("continuation_token")
+    status = sshable.d_check(unit_name)
+    case status
+    when "Succeeded"
+      stats_json = sshable.cmd("cat :stats_path", stats_path: stats_file_path)
+      stats = JSON.parse(stats_json)
+      update_stack("total_bytes" => stats["total_bytes"])
+      sshable.d_clean(unit_name)
       hop_finish
+    when "Failed"
+      sshable.d_restart(unit_name)
+      nap 60
+    when "NotStarted"
+      sshable.d_run(unit_name,
+        "sudo", "host/bin/copy-archive", stats_file_path,
+        stdin: copy_params_json, log: false)
+      nap 30
+    when "InProgress"
+      nap 30
+    else
+      Clog.emit("Unexpected daemonizer2 status: #{status}")
+      nap 60
     end
   end
 
   label def finish
+    vm_host.sshable.cmd("sudo rm -f :stats_path", stats_path: stats_file_path)
+
     machine_image_version_metal.update(
       enabled: true,
       archive_size_mib: source_machine_image_version_metal.archive_size_mib,
@@ -102,6 +105,32 @@ class Prog::MachineImage::CopyVersionMetal < Prog::Base
     pop "Metal machine image version is copied and enabled"
   end
 
+  def copy_params_json
+    {
+      source_conf: store_conf(source_store, source_machine_image_version_metal.store_prefix),
+      target_conf: store_conf(target_store, machine_image_version_metal.store_prefix),
+    }.to_json
+  end
+
+  def store_conf(store, prefix)
+    {
+      bucket: store.bucket,
+      prefix: prefix,
+      region: store.region,
+      endpoint: store.endpoint,
+      access_key_id: store.access_key,
+      secret_access_key: store.secret_key,
+    }
+  end
+
+  def stats_file_path
+    "/tmp/copy_stats_#{machine_image_version_metal.ubid}.json"
+  end
+
+  def vm_host
+    @vm_host ||= VmHost[frame["vm_host_id"]]
+  end
+
   def source_machine_image_version_metal
     @source_machine_image_version_metal ||= MachineImageVersionMetal[frame["source_machine_image_version_metal_id"]]
   end
@@ -112,26 +141,5 @@ class Prog::MachineImage::CopyVersionMetal < Prog::Base
 
   def target_store
     @target_store ||= machine_image_version_metal.store
-  end
-
-  def source_s3_client
-    @source_s3_client ||= build_s3_client(source_store)
-  end
-
-  def target_s3_client
-    @target_s3_client ||= build_s3_client(target_store)
-  end
-
-  def build_s3_client(store)
-    Aws::S3::Client.new(
-      access_key_id: store.access_key,
-      secret_access_key: store.secret_key,
-      endpoint: store.endpoint,
-      region: store.region,
-      force_path_style: true,
-      http_open_timeout: 5,
-      http_read_timeout: 60,
-      retry_limit: 0,
-    )
   end
 end

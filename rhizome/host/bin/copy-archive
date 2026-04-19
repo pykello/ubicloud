@@ -1,0 +1,24 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/storage_copy"
+
+unless (stats_file = ARGV.shift)
+  puts "expected stats_file as argument"
+  exit 1
+end
+
+params = JSON.parse($stdin.read)
+
+unless (source_conf = params["source_conf"])
+  puts "expected source_conf in params"
+  exit 1
+end
+
+unless (target_conf = params["target_conf"])
+  puts "expected target_conf in params"
+  exit 1
+end
+
+StorageCopy.new(source_conf, target_conf, stats_file).copy
