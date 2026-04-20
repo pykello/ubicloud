@@ -51,7 +51,7 @@ class PostgresServer < Sequel::Model
       target_role = "roles/iam.serviceAccountKeyAdmin"
       target_member = "serviceAccount:#{credential.service_account_email}"
       existing_policy = credential.iam_client.get_project_service_account_iam_policy(sa.name)
-      bindings = existing_policy.bindings || [].freeze
+      bindings = existing_policy.bindings || []
       role_binding = bindings.find { it.role == target_role }
       if role_binding
         role_binding.members << target_member unless role_binding.members.include?(target_member)
