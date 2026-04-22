@@ -110,11 +110,27 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
   end
 
   describe "#update_database" do
-    it "destroys the version metal, archive kek, and version" do
+    it "destroys the version metal, archive kek, version, and machine image (last version)" do
       expect { prog.update_database }.to exit({"msg" => "Metal machine image version is destroyed"})
         .and change { mi_version_metal.exists? }.from(true).to(false)
         .and change { archive_kek.exists? }.from(true).to(false)
         .and change { mi_version.exists? }.from(true).to(false)
+        .and change { machine_image.exists? }.from(true).to(false)
+    end
+
+    it "keeps the machine image when other versions remain" do
+      other = MachineImageVersion.create(machine_image_id: machine_image.id, version: "v2")
+      machine_image.update(latest_version_id: other.id)
+
+      expect { prog.update_database }.to exit({"msg" => "Metal machine image version is destroyed"})
+      expect(machine_image.exists?).to be true
+    end
+
+    it "keeps the machine image when latest_version_id is nil but other versions remain" do
+      MachineImageVersion.create(machine_image_id: machine_image.id, version: "v2")
+
+      expect { prog.update_database }.to exit({"msg" => "Metal machine image version is destroyed"})
+      expect(machine_image.exists?).to be true
     end
   end
 end
