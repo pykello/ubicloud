@@ -15,6 +15,7 @@ module Ubicloud
   # +inference_api_key+ :: Ubicloud::InferenceApiKey
   # +kubernetes_cluster+ :: Ubicloud::KubernetesCluster
   # +load_balancer+ :: Ubicloud::LoadBalancer
+  # +machine_image+ :: Ubicloud::MachineImage
   # +postgres+ :: Ubicloud::Postgres
   # +private_subnet+ :: Ubicloud::PrivateSubnet
   # +ssh_public_key+ :: Ubicloud::SshPublicKey

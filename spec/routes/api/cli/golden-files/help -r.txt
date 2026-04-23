@@ -15,6 +15,7 @@ Commands:
     help       Get command help
     kc         Manage Kubernetes clusters
     lb         Manage load balancers
+    mi         Manage machine images
     pg         Manage PostgreSQL databases
     ps         Manage private subnets
     sk         Manage SSH public keys
@@ -529,6 +530,114 @@ Update a load balancer
 
 Usage:
     ubi lb (location/lb-name | lb-id) update algorithm src-port dst-port health-check-endpoint cert-enabled [(vm-name | vm-id) [...]]
+
+
+Manage machine images
+
+Usage:
+    ubi mi command [...]
+    ubi mi (location/mi-name | mi-id) post-command [...]
+
+Commands:
+    list               List machine images
+
+Post Commands:
+    create             Create a machine image from a stopped VM
+    create-version     Create a new version of a machine image from a stopped VM
+    destroy            Destroy a machine image
+    destroy-version    Destroy a specific version of a machine image
+    list-versions      List versions of a machine image
+    show               Show details for a machine image
+
+
+List machine images
+
+Usage:
+    ubi mi list [options]
+
+Options:
+    -f, --fields=fields              show specific fields (comma separated)
+    -l, --location=location          only show machine images in given location
+    -N, --no-headers                 do not show headers
+
+Allowed Option Values:
+    Fields: location name id arch latest-version created-at
+
+
+Create a new version of a machine image from a stopped VM
+
+Usage:
+    ubi mi (location/mi-name | mi-id) create-version [options]
+
+Examples:
+    ubi mi eu-central-h1/my-image create-version -v vmabcdef01234567890abcdef
+    ubi mi eu-central-h1/my-image create-version -v vmabcdef01234567890abcdef -V v2.0
+
+Options:
+    -v, --vm=vm-id                   UBID of a stopped VM to capture (required)
+    -V, --version=version            version label (default: timestamp)
+    -d, --destroy-source             destroy the source VM after capture
+
+
+Create a machine image from a stopped VM
+
+Usage:
+    ubi mi location/mi-name create [options]
+
+Examples:
+    ubi mi eu-central-h1/my-image create -v vmabcdef01234567890abcdef
+    ubi mi eu-central-h1/my-image create -v vmabcdef01234567890abcdef -V v1.0
+
+Options:
+    -v, --vm=vm-id                   UBID of a stopped VM to capture (required)
+    -V, --version=version            version label (default: timestamp)
+    -d, --destroy-source             destroy the source VM after capture
+
+
+Destroy a specific version of a machine image
+
+Usage:
+    ubi mi (location/mi-name | mi-id) destroy-version [options]
+
+Examples:
+    ubi mi eu-central-h1/my-image destroy-version -V v1.0
+
+Options:
+    -V, --version=version            version label to destroy (required)
+
+
+Destroy a machine image
+
+Usage:
+    ubi mi (location/mi-name | mi-id) destroy [options]
+
+Options:
+    -f, --force                      do not require confirmation
+
+
+List versions of a machine image
+
+Usage:
+    ubi mi (location/mi-name | mi-id) list-versions [options]
+
+Options:
+    -f, --fields=fields              show specific fields (comma separated)
+    -N, --no-headers                 do not show headers
+
+Allowed Option Values:
+    Fields: version id enabled actual-size-mib archive-size-mib created-at
+
+
+Show details for a machine image
+
+Usage:
+    ubi mi (location/mi-name | mi-id) show [options]
+
+Options:
+    -f, --fields=fields              show specific fields (comma separated)
+
+Allowed Option Values:
+    Fields: id name location arch latest-version created-at versions
 
 
 Manage PostgreSQL databases
