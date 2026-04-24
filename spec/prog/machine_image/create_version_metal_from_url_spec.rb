@@ -64,7 +64,7 @@ RSpec.describe Prog::MachineImage::CreateVersionMetalFromUrl do
     it "fails when no vm host with archive support exists in location" do
       expect {
         described_class.assemble(machine_image, "v0.1", url, sha256sum, store)
-      }.to raise_error("no vm host with archive support found in location")
+      }.to raise_error("No VM host with archive support found in location")
     end
   end
 

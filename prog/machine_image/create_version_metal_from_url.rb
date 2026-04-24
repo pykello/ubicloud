@@ -12,7 +12,7 @@ class Prog::MachineImage::CreateVersionMetalFromUrl < Prog::Base
       .order { random.function }
       .first
 
-    fail "no vm host with archive support found in location" unless vbb
+    fail MachineImageError.new("No VM host with archive support found in location") unless vbb
 
     DB.transaction do
       miv = MachineImageVersion.create(
