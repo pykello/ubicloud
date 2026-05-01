@@ -1,0 +1,42 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/storage_volume"
+
+unless (vm_name = ARGV.shift)
+  puts "expected vm_name as argument"
+  exit 1
+end
+
+unless (device = ARGV.shift)
+  puts "expected device as argument"
+  exit 1
+end
+
+unless (disk_index = ARGV.shift)
+  puts "expected disk_index as argument"
+  exit 1
+end
+
+unless (vhost_block_backend_version = ARGV.shift)
+  puts "expected vhost_block_backend_version as argument"
+  exit 1
+end
+
+key_wrapping_secrets = JSON.parse($stdin.read)
+
+unless key_wrapping_secrets["key"]
+  puts "expected key in stdin payload"
+  exit 1
+end
+
+StorageVolume.new(
+  vm_name,
+  {
+    "disk_index" => disk_index,
+    "storage_device" => device,
+    "encrypted" => true,
+    "vhost_block_backend_version" => vhost_block_backend_version,
+  },
+).dump_metadata(key_wrapping_secrets)
