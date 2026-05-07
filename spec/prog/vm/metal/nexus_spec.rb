@@ -284,6 +284,35 @@ RSpec.describe Prog::Vm::Metal::Nexus do
     end
   end
 
+  describe ".lookup_machine_image_version" do
+    let(:project_id) { Project.create(name: "test").id }
+    let(:miv) {
+      miv = create_machine_image_version_metal(project_id:, location_id: Location::HETZNER_FSN1_ID, name: "ubuntu-jammy").machine_image_version
+      miv.machine_image.update(latest_version_id: miv.id)
+      miv
+    }
+
+    it "looks up the machine image version for the VM's location and image" do
+      miv
+      expect(Prog::Vm::Nexus.lookup_machine_image_version(project_id, Location::HETZNER_FSN1_ID, "ubuntu-jammy", "latest", 10, raise_on_invalid: false)).to eq(miv)
+    end
+
+    it "returns nil if !raise_on_invalid and the machine image exists but no version is found" do
+      MachineImage.create(project_id:, location_id: Location::HETZNER_FSN1_ID, name: "ubuntu-noble", arch: "x64")
+      expect(Prog::Vm::Nexus.lookup_machine_image_version(project_id, Location::HETZNER_FSN1_ID, "ubuntu-noble", "latest", 10, raise_on_invalid: false)).to be_nil
+    end
+
+    it "returns nil if !raise_on_invalid and the requested version is not enabled" do
+      miv.metal.update(enabled: false)
+      expect(Prog::Vm::Nexus.lookup_machine_image_version(project_id, Location::HETZNER_FSN1_ID, "ubuntu-jammy", "latest", 10, raise_on_invalid: false)).to be_nil
+    end
+
+    it "returns nil if !raise_on_invalid and the requested version is too large" do
+      miv.update(actual_size_mib: 20 * 1024)
+      expect(Prog::Vm::Nexus.lookup_machine_image_version(project_id, Location::HETZNER_FSN1_ID, "ubuntu-jammy", "latest", 10, raise_on_invalid: false)).to be_nil
+    end
+  end
+
   describe "#create_unix_user" do
     it "runs adduser" do
       expect(nx).to receive(:rand).and_return(1111)
