@@ -4,8 +4,6 @@ require "base64"
 require "stringio"
 
 require "ed25519"
-require_relative "net_ssh"
-
 class SshKey
   def self.generate
     new Ed25519::SigningKey.generate

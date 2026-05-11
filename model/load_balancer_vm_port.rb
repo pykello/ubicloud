@@ -1,8 +1,6 @@
 #  frozen_string_literal: true
 
 require_relative "../model"
-require_relative "../lib/net_ssh"
-
 class LoadBalancerVmPort < Sequel::Model
   many_to_one :load_balancer_vm, read_only: true
   many_to_one :load_balancer_port, read_only: true
