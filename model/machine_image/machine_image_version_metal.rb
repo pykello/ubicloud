@@ -7,12 +7,27 @@ class MachineImageVersionMetal < Sequel::Model
   many_to_one :store, class: :MachineImageStore, read_only: true
   many_to_one :archive_kek, class: :StorageKeyEncryptionKey, read_only: true
   one_to_many :vm_storage_volumes, key: :machine_image_version_id, read_only: true
+  one_to_many :active_billing_records, class: :BillingRecord, key: :resource_id, read_only: true, &:active
 
   plugin ResourceMethods, referencing: UBID::TYPE_MACHINE_IMAGE_VERSION
 
   def display_state
     return "ready" if enabled
     archive_size_mib ? "destroying" : "creating"
+  end
+
+  def create_billing_record
+    project = machine_image_version.machine_image.project
+    return unless project.billable
+    rate = BillingRate.from_resource_properties("MachineImageStorage", "standard", machine_image_version.machine_image.location.name)
+    return unless rate
+    BillingRecord.create(
+      project_id: project.id,
+      resource_id: id,
+      resource_name: "#{machine_image_version.machine_image.name}:#{machine_image_version.version}",
+      billing_rate_id: rate["id"],
+      amount: archive_size_mib / 1024.0,
+    )
   end
 end
 
