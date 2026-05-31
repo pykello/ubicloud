@@ -66,7 +66,7 @@ module ContentGenerator
       ]
     end
 
-    def self.boot_image(boot_image)
+    def self.boot_image(_location, boot_image)
       return "Machine Image" if boot_image == Clover::MACHINE_IMAGE_BOOT_VALUE
       Option::BootImages.find { it.name == boot_image }.display_name
     end

@@ -232,7 +232,9 @@ class Clover
       .map { |mi| {location_id: mi.location_id, value: mi.name, display_name: "#{mi.name}@latest"} }
 
     boot_images << MACHINE_IMAGE_BOOT_VALUE if machine_image_options.any?
-    options.add_option(name: "boot_image", values: boot_images)
+    options.add_option(name: "boot_image", values: boot_images, parent: "location") do |location, bi|
+      bi != MACHINE_IMAGE_BOOT_VALUE || machine_image_options.any? { |mi| mi[:location_id] == location.id }
+    end
 
     if machine_image_options.any?
       options.add_option(name: "machine_image", values: machine_image_options, parent: "location") do |location, mi|
