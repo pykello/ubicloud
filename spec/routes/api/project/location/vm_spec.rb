@@ -95,6 +95,18 @@ RSpec.describe Clover, "vm" do
         }.to raise_error(Committee::InvalidRequest, /schema does not define properties: machine_image/)
       end
 
+      it "rejects boot_image referencing an MI the user cannot view" do
+        post "/project/#{project.ubid}/location/#{TEST_LOCATION}/vm/test-vm", {
+          public_key: "ssh key",
+          unix_user: "ubi",
+          size: "standard-2",
+          boot_image: "nonexistent@latest",
+        }.to_json
+
+        expect(last_response).to have_api_error(400, "Validation failed for following fields: boot_image", {"boot_image" => "Selected machine image is not available"})
+        expect(Vm.count).to eq(0)
+      end
+
       it "rejects the web MI sentinel as an invalid boot image name" do
         post "/project/#{project.ubid}/location/#{TEST_LOCATION}/vm/test-vm", {
           public_key: "ssh key",

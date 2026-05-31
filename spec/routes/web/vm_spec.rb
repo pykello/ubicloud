@@ -257,6 +257,23 @@ RSpec.describe Clover, "vm" do
           expect(page).to have_no_field("boot_image", with: "__machine_image", disabled: :all)
         end
 
+        it "rejects a submission naming an MI the user cannot view (or that doesn't exist)" do
+          visit "#{project.path}/vm/create"
+          _csrf = find("#creation-form input[name='_csrf']", visible: false).value
+          page.driver.post "#{project.path}/vm", {
+            _csrf:,
+            name: "dummy-vm",
+            location: Location::HETZNER_FSN1_UBID,
+            boot_image: "__machine_image",
+            machine_image: "nonexistent",
+            public_key: "a a",
+            size: "standard-2",
+            unix_user: "ubi",
+          }
+          expect(page.body).to include("Selected machine image is not available")
+          expect(Vm.count).to eq(0)
+        end
+
         it "creates a vm from the picked machine image" do
           visit "#{project.path}/vm/create"
           fill_in "Name", with: "dummy-vm"
