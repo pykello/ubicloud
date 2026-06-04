@@ -1,0 +1,7 @@
+<% edit_perm = has_project_permission("MachineImage:edit") %>
+
+<% if edit_perm %>
+  <div class="p-6">
+    <%== part("components/rename_object", object: @machine_image, type: "machine image") %>
+  </div>
+<% end %>
