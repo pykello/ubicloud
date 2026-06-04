@@ -16,6 +16,16 @@ class Clover
           .all
         view "machine_image/index"
       end
+
+      r.post true do
+        handle_validation_failure("machine_image/create")
+        machine_image_post(typecast_params.nonempty_str!("name"))
+      end
+
+      r.get "create" do
+        authorize("MachineImage:create", @project)
+        view "machine_image/create"
+      end
     end
   end
 end
