@@ -86,6 +86,7 @@ class Clover
 
   def machine_image_set_latest_version(mi, new_label)
     authorize("MachineImage:edit", mi)
+    handle_validation_failure("machine_image/show") { @page = "settings" }
 
     DB.transaction do
       new_id = nil
@@ -103,7 +104,12 @@ class Clover
       audit_log(mi, "update_latest_version", miv ? [miv] : [])
     end
 
-    Serializers::MachineImage.serialize(mi.refresh)
+    if api?
+      Serializers::MachineImage.serialize(mi.refresh)
+    else
+      flash["notice"] = "Latest version updated"
+      request.redirect mi, "/settings"
+    end
   end
 
   def machine_image_post(name)
