@@ -247,6 +247,7 @@ module Config
   optional :e2e_machine_images_r2_bucket, string
   optional :e2e_machine_images_r2_access_key, string, clear: true
   optional :e2e_machine_images_r2_secret_key, string, clear: true
+  optional :e2e_ubuntu_noble_version, string
   optional :e2e_ubuntu_noble_sha256sum, string
 
   # Local e2e

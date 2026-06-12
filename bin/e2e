@@ -70,6 +70,10 @@ def test_metal(options, test_cases)
   # exercise the assertion against deny-by-default cloud firewalls
   # where it has teeth.
 
+  if options[:test_cases].include?("machine_image")
+    tests_to_wait << Prog::Test::MachineImage.assemble(version: Config.e2e_ubuntu_noble_version)
+  end
+
   if options[:test_cases].include?("kubernetes")
     Project[Config.kubernetes_service_project_id] ||
       Project.create_with_id(Config.kubernetes_service_project_id, name: "Ubicloud-Kubernetes-Resources")
