@@ -32,39 +32,8 @@ RSpec.describe Prog::MachineImage::CreateVersionMetalFromUrl do
   }
 
   describe ".assemble" do
-    it "creates a machine image version metal and strand" do
-      vbb = create_vhost_block_backend(version: "v0.4.1", allocation_weight: 50, vm_host_id: vm_host.id)
-      strand = described_class.assemble(machine_image, "2.0", url, sha256sum, store)
-
-      mi_version_metal = MachineImageVersionMetal[strand.id]
-      expect(mi_version_metal).not_to be_nil
-      expect(mi_version_metal.status).to eq("creating")
-      expect(mi_version_metal.store_id).to eq(store.id)
-      expect(mi_version_metal.store_prefix).to eq("#{project.ubid}/#{machine_image.ubid}/2.0")
-      expect(mi_version_metal.archive_kek).not_to be_nil
-
-      expect(strand.prog).to eq("MachineImage::CreateVersionMetalFromUrl")
-      expect(strand.label).to eq("archive")
-      expect(strand.stack.first["url"]).to eq(url)
-      expect(strand.stack.first["sha256sum"]).to eq(sha256sum)
-      expect(strand.stack.first["vm_host_id"]).to eq(vm_host.id)
-      expect(strand.stack.first["vhost_block_backend_version"]).to eq(vbb.version)
-      expect(strand.stack.first["set_as_latest"]).to be true
-    end
-
-    it "selects only from backends that support archive" do
-      create_vhost_block_backend(version: "v0.3.0", allocation_weight: 5000, vm_host_id: vm_host.id)
-      vbb = create_vhost_block_backend(version: "v0.4.1", allocation_weight: 1, vm_host_id: vm_host.id)
-
-      strand = described_class.assemble(machine_image, "2.0", url, sha256sum, store)
-
-      expect(strand.stack.first["vhost_block_backend_version"]).to eq(vbb.version)
-    end
-
-    it "fails when no vm host with archive support exists in location" do
-      expect {
-        described_class.assemble(machine_image, "v0.1", url, sha256sum, store)
-      }.to raise_error("no vm host with archive support found in location")
+    it "is deprecated and raises" do
+      expect { described_class.assemble }.to raise_error(MachineImageError, /temporarily unavailable/)
     end
   end
 

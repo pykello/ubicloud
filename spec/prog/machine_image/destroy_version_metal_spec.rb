@@ -4,7 +4,7 @@ require_relative "../../model/spec_helper"
 
 RSpec.describe Prog::MachineImage::DestroyVersionMetal do
   subject(:prog) {
-    described_class.new(described_class.assemble(mi_version_metal))
+    described_class.new(Strand.create_with_id(mi_version_metal, prog: "MachineImage::DestroyVersionMetal", label: "destroy_objects"))
   }
 
   let(:mi_version_metal) { create_machine_image_version_metal }
@@ -15,91 +15,8 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
   let(:store) { mi_version_metal.store }
 
   describe ".assemble" do
-    let(:args) { {machine_image_id: machine_image.id, project_id: project.id, machine_image_store_id: store.id} }
-
-    it "marks the version metal as destroying and creates a strand" do
-      strand = described_class.assemble(mi_version_metal)
-
-      expect(mi_version_metal.reload.status).to eq("destroying")
-      expect(strand.prog).to eq("MachineImage::DestroyVersionMetal")
-      expect(strand.label).to eq("destroy_objects")
-    end
-
-    it "finalizes any active billing records for the version metal" do
-      br = mi_version_metal.create_billing_record
-      # Pre-date the lower bound so finalize produces a non-empty (non-zero-duration) range.
-      br.update(span: Sequel.pg_range((Time.now - 60)..))
-
-      expect { described_class.assemble(mi_version_metal) }
-        .to change { br.reload.span.end }.from(nil).to(be_within(60).of(Time.now))
-    end
-
-    it "fails when the version is still being created" do
-      mi_version_metal.update(status: "creating", archive_size_mib: nil)
-
-      expect {
-        described_class.assemble(mi_version_metal)
-      }.to raise_error(MachineImageError, "Version is still being created; wait for it to finish before destroying")
-    end
-
-    it "is idempotent when already being destroyed" do
-      mi_version_metal.update(status: "destroying")
-
-      expect {
-        described_class.assemble(mi_version_metal)
-      }.not_to change { Strand.where(id: mi_version_metal.id).count }
-    end
-
-    it "reassigns latest_version_id to the newest ready sibling when destroying the latest" do
-      machine_image.update(latest_version_id: mi_version.id)
-      first_sibling = create_machine_image_version_metal(**args, version: "v2")
-      middle_sibling = create_machine_image_version_metal(**args, version: "v3")
-      last_sibling = create_machine_image_version_metal(**args, version: "v4")
-      first_sibling.machine_image_version.update(created_at: Time.now - 300)
-      middle_sibling.machine_image_version.update(created_at: Time.now - 100)
-      last_sibling.machine_image_version.update(created_at: Time.now - 200)
-
-      described_class.assemble(mi_version_metal)
-
-      expect(machine_image.reload.latest_version_id).to eq(middle_sibling.id)
-    end
-
-    it "clears latest_version_id when destroying the only ready version" do
-      machine_image.update(latest_version_id: mi_version.id)
-      not_ready = create_machine_image_version_metal(**args, version: "1.1")
-      not_ready.update(status: "creating")
-
-      described_class.assemble(mi_version_metal)
-
-      expect(machine_image.reload.latest_version_id).to be_nil
-    end
-
-    it "keeps latest_version_id unchanged when destroying a non-latest version" do
-      other = create_machine_image_version_metal(**args, version: "0.9")
-      other.update(status: "ready")
-      machine_image.update(latest_version_id: other.id)
-
-      described_class.assemble(mi_version_metal)
-
-      expect(machine_image.reload.latest_version_id).to eq(other.id)
-    end
-
-    it "fails when VMs are still using this version" do
-      vm_host = create_vm_host
-      vhost_block_backend = create_vhost_block_backend(allocation_weight: 50, vm_host_id: vm_host.id)
-      vm = create_vm(vm_host_id: vm_host.id, project_id: project.id)
-      sd = StorageDevice.create(name: "vda", total_storage_gib: 100, available_storage_gib: 50, vm_host_id: vm_host.id)
-      VmStorageVolume.create(
-        vm_id: vm.id, boot: true, size_gib: 5, disk_index: 0,
-        storage_device_id: sd.id, vhost_block_backend_id: vhost_block_backend.id,
-        key_encryption_key_1_id: StorageKeyEncryptionKey.create_random(auth_data: "k1").id,
-        machine_image_version_id: mi_version.id,
-        vring_workers: 1,
-      )
-
-      expect {
-        described_class.assemble(mi_version_metal)
-      }.to raise_error("VMs are still using this machine image version")
+    it "is deprecated and raises" do
+      expect { described_class.assemble }.to raise_error(MachineImageError, /temporarily unavailable/)
     end
   end
 
