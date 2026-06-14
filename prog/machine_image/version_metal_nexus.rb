@@ -80,7 +80,19 @@ class Prog::MachineImage::VersionMetalNexus < Prog::Base
   end
 
   label def wait_archive
-    reap(:wait)
+    reap(:after_archive)
+  end
+
+  # If the create child marked the metal 'failed', wipe R2 but keep the
+  # DB rows (DestroyVersionMetal#update_database leaves them in place
+  # when entered at status='failed'). Otherwise the archive succeeded
+  # and we settle into the steady-state wait.
+  label def after_archive
+    if machine_image_version_metal.status == "failed"
+      bud Prog::MachineImage::DestroyVersionMetal, {}, "destroy_objects"
+      hop_wait_destroy
+    end
+    hop_wait
   end
 
   label def wait

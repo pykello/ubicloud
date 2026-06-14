@@ -98,8 +98,22 @@ RSpec.describe Prog::MachineImage::VersionMetalNexus do
   end
 
   describe "#wait_archive" do
-    it "hops to wait when no children are running" do
-      expect { prog.wait_archive }.to hop("wait")
+    it "hops to after_archive when no children are running" do
+      expect { prog.wait_archive }.to hop("after_archive")
+    end
+  end
+
+  describe "#after_archive" do
+    it "hops to wait when the metal row is ready" do
+      mi_version_metal.update(status: "ready")
+      expect { prog.after_archive }.to hop("wait")
+    end
+
+    it "buds DestroyVersionMetal at destroy_objects and hops to wait_destroy when the metal row is failed" do
+      mi_version_metal.update(status: "failed", archive_size_mib: nil)
+      expect { prog.after_archive }.to hop("wait_destroy")
+      child = strand.children_dataset.first
+      expect(child).to have_attributes(prog: "MachineImage::DestroyVersionMetal", label: "destroy_objects")
     end
   end
 
