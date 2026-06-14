@@ -83,11 +83,20 @@ RSpec.describe Prog::MachineImage::VersionMetalNexus do
       expect(archive_strand.stack.first["logical_size_bytes"]).to eq(1073741824)
     end
 
-    it "cleans daemon, flips to failed, and hops to destroy_objects on Failed" do
+    it "cleans the daemon and naps on the first two Failed observations" do
+      expect(sshable).to receive(:d_check).with(daemon).and_return("Failed")
+      expect(sshable).to receive(:d_clean).with(daemon)
+      expect { archive_prog.archive }.to nap(60)
+      expect(archive_strand.stack.first["archive_failures"]).to eq(1)
+    end
+
+    it "marks failed and hops destroy_objects after the third Failed observation" do
+      refresh_frame(archive_prog, new_values: {"archive_failures" => described_class::MAX_ARCHIVE_FAILURES - 1})
       expect(sshable).to receive(:d_check).with(daemon).and_return("Failed")
       expect(sshable).to receive(:d_clean).with(daemon)
       expect { archive_prog.archive }.to hop("destroy_objects")
       expect(mi_version_metal.reload.status).to eq("failed")
+      expect(archive_strand.stack.first["archive_failures"]).to eq(described_class::MAX_ARCHIVE_FAILURES)
     end
 
     it "naps on InProgress" do
@@ -106,7 +115,7 @@ RSpec.describe Prog::MachineImage::VersionMetalNexus do
     let(:archive_strand) {
       Strand.create_with_id(mi_version_metal,
         prog: "MachineImage::VersionMetalNexus", label: "archive",
-        stack: [{"source_vm_id" => source_vm.id, "destroy_source_after" => false, "set_as_latest" => true}])
+        stack: [{"source_vm_id" => source_vm.id, "destroy_source_after" => false, "set_as_latest" => true, "archive_failures" => 0}])
     }
     let(:archive_prog) { described_class.new(archive_strand) }
     let(:sshable) { vm_host.sshable }
@@ -135,7 +144,7 @@ RSpec.describe Prog::MachineImage::VersionMetalNexus do
         prog: "MachineImage::VersionMetalNexus", label: "archive",
         stack: [{"url" => "https://x/img", "sha256sum" => "abc",
                  "vm_host_id" => vm_host.id, "vhost_block_backend_version" => "v0.4.1",
-                 "set_as_latest" => true}])
+                 "set_as_latest" => true, "archive_failures" => 0}])
     }
     let(:archive_prog) { described_class.new(archive_strand) }
     let(:sshable) { vm_host.sshable }

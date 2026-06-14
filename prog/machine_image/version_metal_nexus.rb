@@ -11,7 +11,9 @@ class Prog::MachineImage::VersionMetalNexus < Prog::Base
   frame_reader :source_vm_id, :destroy_source_after,
     :url, :sha256sum, :vm_host_id, :vhost_block_backend_version,
     :set_as_latest
-  frame_accessor :physical_size_bytes, :logical_size_bytes
+  frame_accessor :physical_size_bytes, :logical_size_bytes, :archive_failures
+
+  MAX_ARCHIVE_FAILURES = 3
 
   def self.assemble_from_vm(machine_image, version, source_vm, store,
     destroy_source_after: false, set_as_latest: true)
@@ -60,7 +62,7 @@ class Prog::MachineImage::VersionMetalNexus < Prog::Base
       Strand.create_with_id(miv,
         prog: "MachineImage::VersionMetalNexus",
         label: "archive",
-        stack: [frame])
+        stack: [frame.merge("archive_failures" => 0)])
     end
   end
 
@@ -74,7 +76,9 @@ class Prog::MachineImage::VersionMetalNexus < Prog::Base
       sshable.d_clean(archive_unit)
       hop_finish
     when "Failed"
+      self.archive_failures += 1
       sshable.d_clean(archive_unit)
+      nap 60 if archive_failures < MAX_ARCHIVE_FAILURES
       machine_image_version_metal.update(status: "failed")
       hop_destroy_objects
     when "NotStarted"

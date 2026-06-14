@@ -74,7 +74,7 @@ RSpec.describe Clover, "machine-image" do
       expect(miv).not_to be_nil
       strand = miv.strand
       expect(strand.prog).to eq("MachineImage::VersionMetalNexus")
-      expect(strand.stack.first).to eq("source_vm_id" => source_vm.id, "destroy_source_after" => true, "set_as_latest" => true)
+      expect(strand.stack.first).to include("source_vm_id" => source_vm.id, "destroy_source_after" => true, "set_as_latest" => true)
     end
 
     it "creates with default version when not provided" do
@@ -375,7 +375,7 @@ RSpec.describe Clover, "machine-image" do
       expect(miv).not_to be_nil
       strand = miv.strand
       expect(strand.prog).to eq("MachineImage::VersionMetalNexus")
-      expect(strand.stack.first).to eq("source_vm_id" => source_vm.id, "destroy_source_after" => true, "set_as_latest" => true)
+      expect(strand.stack.first).to include("source_vm_id" => source_vm.id, "destroy_source_after" => true, "set_as_latest" => true)
     end
 
     it "returns 400 when source VM is not found" do
