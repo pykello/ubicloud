@@ -7,10 +7,6 @@ class Prog::MachineImage::CreateVersionMetalFromUrl < Prog::Base
   frame_reader :url, :sha256sum, :vm_host_id, :vhost_block_backend_version, :set_as_latest
   frame_accessor :physical_size_bytes, :logical_size_bytes
 
-  def self.assemble(*)
-    fail MachineImageError, "Machine image create is temporarily unavailable"
-  end
-
   label def archive
     register_deadline(nil, 3600)
 

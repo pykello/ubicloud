@@ -64,12 +64,6 @@ RSpec.describe Prog::MachineImage::CreateVersionMetal do
     )
   }
 
-  describe ".assemble" do
-    it "is deprecated and raises" do
-      expect { described_class.assemble }.to raise_error(MachineImageError, /temporarily unavailable/)
-    end
-  end
-
   describe "#archive" do
     let(:sshable) { source_vm.vm_host.sshable }
     let(:daemon_name) { "archive_#{mi_version.ubid}" }

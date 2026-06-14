@@ -23,12 +23,6 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
       archive_kek_id: archive_kek.id, store_id: store.id, store_prefix: "p")
   }
 
-  describe ".assemble" do
-    it "is deprecated and raises" do
-      expect { described_class.assemble }.to raise_error(MachineImageError, /temporarily unavailable/)
-    end
-  end
-
   describe "#prep_destroy" do
     let(:strand) {
       Strand.create_with_id(mi_version_metal,

@@ -7,10 +7,6 @@ class Prog::MachineImage::CreateVersionMetal < Prog::Base
   frame_reader :source_vm_id, :destroy_source_after, :set_as_latest
   frame_accessor :archive_size_bytes
 
-  def self.assemble(*)
-    fail MachineImageError, "Machine image create is temporarily unavailable"
-  end
-
   label def archive
     register_deadline(nil, source_vm.storage_size_gib * 24) # 4 minutes per 10 GiB
 

@@ -5,10 +5,6 @@ require "aws-sdk-s3"
 class Prog::MachineImage::DestroyVersionMetal < Prog::Base
   subject_is :machine_image_version_metal
 
-  def self.assemble(*)
-    fail MachineImageError, "Machine image destroy is temporarily unavailable"
-  end
-
   label def prep_destroy
     DB.transaction do
       mi = machine_image_version_metal.machine_image_version.machine_image(&:for_update)
