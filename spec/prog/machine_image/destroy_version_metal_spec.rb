@@ -25,6 +25,60 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
     end
   end
 
+  describe "#prep_destroy" do
+    let(:strand) {
+      Strand.create_with_id(mi_version_metal,
+        prog: "MachineImage::DestroyVersionMetal", label: "prep_destroy")
+    }
+    let(:prep_prog) { described_class.new(strand) }
+
+    before { mi_version_metal.update(status: "ready") }
+
+    it "flips status to destroying, finalizes billing, reassigns latest, hops to wait_vms" do
+      machine_image.update(latest_version_id: mi_version.id)
+      br = mi_version_metal.create_billing_record
+      br.update(span: Sequel.pg_range((Time.now - 60)..))
+
+      expect { prep_prog.prep_destroy }.to hop("wait_vms")
+        .and change { mi_version_metal.reload.status }.from("ready").to("destroying")
+        .and change { br.reload.span.end }.from(nil).to(be_within(60).of(Time.now))
+      expect(machine_image.reload.latest_version_id).to be_nil
+    end
+
+    it "is idempotent when already destroying" do
+      mi_version_metal.update(status: "destroying")
+      expect { prep_prog.prep_destroy }.to hop("wait_vms")
+    end
+  end
+
+  describe "#wait_vms" do
+    let(:vm_host) { create_vm_host }
+    let(:vhost) { create_vhost_block_backend(allocation_weight: 50, vm_host_id: vm_host.id) }
+    let(:project_for_vm) { Project.create(name: "vmp") }
+    let(:strand) {
+      Strand.create_with_id(mi_version_metal,
+        prog: "MachineImage::DestroyVersionMetal", label: "wait_vms")
+    }
+    let(:wait_prog) { described_class.new(strand) }
+
+    it "naps while a VM still references the MIV" do
+      vm = create_vm(vm_host_id: vm_host.id, project_id: project_for_vm.id)
+      sd = StorageDevice.create(name: "sda", total_storage_gib: 100, available_storage_gib: 50, vm_host_id: vm_host.id)
+      VmStorageVolume.create(
+        vm_id: vm.id, boot: true, size_gib: 1, disk_index: 0,
+        storage_device_id: sd.id, vhost_block_backend_id: vhost.id,
+        key_encryption_key_1_id: StorageKeyEncryptionKey.create_random(auth_data: "k").id,
+        machine_image_version_id: mi_version.id,
+        vring_workers: 1,
+      )
+      expect { wait_prog.wait_vms }.to nap(30)
+    end
+
+    it "hops to destroy_objects once no VM references the MIV" do
+      expect { wait_prog.wait_vms }.to hop("destroy_objects")
+    end
+  end
+
   describe "#destroy_objects" do
     let(:s3_client) { Aws::S3::Client.new(stub_responses: true) }
 

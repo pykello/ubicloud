@@ -9,6 +9,33 @@ class Prog::MachineImage::DestroyVersionMetal < Prog::Base
     fail MachineImageError, "Machine image destroy is temporarily unavailable"
   end
 
+  label def prep_destroy
+    DB.transaction do
+      mi = machine_image_version_metal.machine_image_version.machine_image(&:for_update)
+      machine_image_version_metal.lock!
+      hop_wait_vms if machine_image_version_metal.status == "destroying"
+
+      machine_image_version_metal.update(status: "destroying")
+      machine_image_version_metal.active_billing_records.each(&:finalize)
+
+      miv = machine_image_version_metal.machine_image_version
+      if mi.latest_version_id == miv.id
+        new_latest = mi.versions_dataset
+          .association_join(:metal)
+          .where(Sequel[:metal][:status] => "ready")
+          .reverse(:created_at)
+          .get(Sequel[:machine_image_version][:id])
+        mi.update(latest_version_id: new_latest)
+      end
+    end
+    hop_wait_vms
+  end
+
+  label def wait_vms
+    nap 30 unless machine_image_version_metal.vm_storage_volumes_dataset.empty?
+    hop_destroy_objects
+  end
+
   label def destroy_objects
     register_deadline(nil, 600)
 
