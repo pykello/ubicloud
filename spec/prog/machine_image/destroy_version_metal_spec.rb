@@ -137,11 +137,20 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
   end
 
   describe "#update_database" do
-    it "destroys the version metal, archive kek, and version" do
+    it "destroys the version metal, archive kek, and version when status is 'destroying'" do
       expect { prog.update_database }.to exit({"msg" => "Metal machine image version is destroyed"})
         .and change { mi_version_metal.exists? }.from(true).to(false)
         .and change { archive_kek.exists? }.from(true).to(false)
         .and change { mi_version.exists? }.from(true).to(false)
+    end
+
+    it "preserves the DB rows when status is 'failed'" do
+      mi_version_metal.update(status: "failed", archive_size_mib: nil)
+      expect { prog.update_database }.to exit({"msg" => "Metal machine image version archive objects deleted"})
+      expect(mi_version_metal.exists?).to be true
+      expect(archive_kek.exists?).to be true
+      expect(mi_version.exists?).to be true
+      expect(mi_version_metal.reload.status).to eq("failed")
     end
   end
 end

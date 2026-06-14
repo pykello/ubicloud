@@ -81,6 +81,13 @@ class Prog::MachineImage::DestroyVersionMetal < Prog::Base
   end
 
   label def update_database
+    # A row that entered destroy_objects at status='failed' is one whose
+    # archive blew up — we wipe R2 but leave the DB rows for an operator
+    # to inspect.
+    if machine_image_version_metal.status == "failed"
+      pop "Metal machine image version archive objects deleted"
+    end
+
     version = machine_image_version_metal.machine_image_version
     archive_kek = machine_image_version_metal.archive_kek
     machine_image_version_metal.destroy
