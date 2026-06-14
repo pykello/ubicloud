@@ -82,10 +82,11 @@ RSpec.describe Prog::MachineImage::CreateVersionMetal do
       expect(strand.stack.first["archive_size_bytes"]).to eq(10485760)
     end
 
-    it "restarts daemon when it failed" do
+    it "cleans daemon, marks status as failed, and pops when daemon failed" do
       expect(sshable).to receive(:d_check).with(daemon_name).and_return("Failed")
-      expect(sshable).to receive(:d_restart).with(daemon_name)
-      expect { prog.archive }.to nap(60)
+      expect(sshable).to receive(:d_clean).with(daemon_name)
+      expect { prog.archive }.to exit({"msg" => "Metal machine image version archive failed"})
+      expect(mi_version_metal.reload.status).to eq("failed")
     end
 
     it "starts daemon when status is NotStarted" do

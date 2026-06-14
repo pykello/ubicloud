@@ -23,8 +23,9 @@ class Prog::MachineImage::CreateVersionMetalFromUrl < Prog::Base
       sshable.d_clean(unit_name)
       hop_finish
     when "Failed"
-      sshable.d_restart(unit_name)
-      nap 60
+      sshable.d_clean(unit_name)
+      machine_image_version.metal.update(status: "failed")
+      pop "Metal machine image version archive failed"
     when "NotStarted"
       sshable.d_run(unit_name,
         "sudo", "host/bin/archive-url", url, sha256sum, vhost_block_backend_version, stats_file_path,
