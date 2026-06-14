@@ -44,6 +44,17 @@ def restart(name)
   r "sudo systemctl restart #{name}"
 end
 
+# Hard-cancel an in-flight unit. Idempotent across states so callers
+# don't have to check first.
+def stop(name)
+  case get_state(name)
+  when "InProgress", "Succeeded"
+    r "sudo systemctl stop #{name}.service"
+  when "Failed"
+    r "sudo systemctl reset-failed #{name}.service"
+  end
+end
+
 command = ARGV[0]
 name = ARGV[1]
 stdin_path = "/dev/shm/#{name}.stdin"
@@ -55,6 +66,8 @@ when "clean"
   clean(name, stdin_path)
 when "restart"
   restart(name)
+when "stop"
+  stop(name)
 when "run"
   command_parts = ARGV[2..]
   state = get_state(name)
