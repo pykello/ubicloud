@@ -8,16 +8,20 @@ RSpec.describe Prog::MachineImage::DestroyVersionMetal do
       prog: "MachineImage::DestroyVersionMetal", label: "destroy_objects"))
   }
 
-  let(:mi_version_metal) {
-    metal = create_machine_image_version_metal
-    metal.update(status: "destroying")
-    metal
+  let(:project) { Project.create(name: "p") }
+  let(:store) {
+    MachineImageStore.create(project_id: project.id, location_id: Location::HETZNER_FSN1_ID,
+      provider: "r2", region: "auto", endpoint: "https://r2.example.com/",
+      bucket: "b", access_key: "ak", secret_key: "sk")
   }
-  let(:mi_version) { mi_version_metal.machine_image_version }
-  let(:machine_image) { mi_version.machine_image }
-  let(:project) { machine_image.project }
-  let(:archive_kek) { mi_version_metal.archive_kek }
-  let(:store) { mi_version_metal.store }
+  let(:machine_image) { MachineImage.create(name: "mi", project_id: project.id, arch: "x64", location_id: Location::HETZNER_FSN1_ID) }
+  let(:mi_version) { MachineImageVersion.create(machine_image_id: machine_image.id, version: "v1", actual_size_mib: 5 * 1024) }
+  let(:archive_kek) { StorageKeyEncryptionKey.create_random(auth_data: "k") }
+  let(:mi_version_metal) {
+    MachineImageVersionMetal.create_with_id(mi_version,
+      status: "destroying", archive_size_mib: 1024,
+      archive_kek_id: archive_kek.id, store_id: store.id, store_prefix: "p")
+  }
 
   describe ".assemble" do
     it "is deprecated and raises" do

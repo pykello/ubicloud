@@ -11,15 +11,16 @@ RSpec.describe Clover, "cli mi destroy-version" do
     @mi_metal = create_machine_image_version_metal(project_id: @project.id, location_id:)
     @mi = @mi_metal.machine_image_version.machine_image
     extra = MachineImageVersion.create(machine_image_id: @mi.id, version: "v2")
-    MachineImageVersionMetal.create_with_id(extra, archive_kek_id: @mi_metal.archive_kek_id,
+    em = MachineImageVersionMetal.create_with_id(extra, archive_kek_id: @mi_metal.archive_kek_id,
       store_id: @mi_metal.store_id, store_prefix: "p2", status: "ready", archive_size_mib: 10)
+    Strand.create_with_id(em, prog: "MachineImage::VersionMetalNexus", label: "wait")
     @mi.update(latest_version_id: @mi_metal.machine_image_version.id)
   end
 
   it "schedules version destruction with -f" do
     body = cli(%W[mi eu-central-h1/#{@mi.name} destroy-version -f v2])
     expect(body).to eq("Machine image version v2 is now scheduled for destruction\n")
-    expect(Strand[extra_metal.id].prog).to eq("MachineImage::DestroyVersionMetal")
+    expect(extra_metal.reload.destroy_set?).to be true
   end
 
   it "asks for confirmation when -f is not given" do
@@ -33,7 +34,7 @@ RSpec.describe Clover, "cli mi destroy-version" do
   it "works on correct confirmation" do
     body = cli(%W[--confirm v2 mi eu-central-h1/#{@mi.name} destroy-version v2])
     expect(body).to eq("Machine image version v2 is now scheduled for destruction\n")
-    expect(Strand[extra_metal.id].prog).to eq("MachineImage::DestroyVersionMetal")
+    expect(extra_metal.reload.destroy_set?).to be true
   end
 
   it "fails on incorrect confirmation" do

@@ -6,12 +6,19 @@ RSpec.describe Prog::MachineImage::CreateVersionMetalFromUrl do
   subject(:prog) { described_class.new(strand) }
 
   let(:vm_host) { create_vm_host }
-  let(:mi_version_metal) { create_machine_image_version_metal }
-  let(:project) { machine_image.project }
-  let(:mi_version) { mi_version_metal.machine_image_version }
-  let(:machine_image) { mi_version.machine_image }
-  let(:store) { mi_version_metal.store }
-  let(:archive_kek) { mi_version_metal.archive_kek }
+  let(:project) { Project.create(name: "p") }
+  let(:store) {
+    MachineImageStore.create(project_id: project.id, location_id: Location::HETZNER_FSN1_ID,
+      provider: "r2", region: "auto", endpoint: "https://r2.example.com/",
+      bucket: "b", access_key: "ak", secret_key: "sk")
+  }
+  let(:machine_image) { MachineImage.create(name: "mi", project_id: project.id, arch: "x64", location_id: Location::HETZNER_FSN1_ID) }
+  let(:mi_version) { MachineImageVersion.create(machine_image_id: machine_image.id, version: "v1", actual_size_mib: 5 * 1024) }
+  let(:archive_kek) { StorageKeyEncryptionKey.create_random(auth_data: "k") }
+  let(:mi_version_metal) {
+    MachineImageVersionMetal.create_with_id(mi_version,
+      status: "creating", archive_kek_id: archive_kek.id, store_id: store.id, store_prefix: "p")
+  }
   let(:url) { "https://example.com/image.raw" }
   let(:sha256sum) { "abc123" }
   let(:strand) {
