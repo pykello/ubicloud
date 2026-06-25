@@ -38,10 +38,10 @@ RSpec.describe Prog::Test::VmGroup do
   end
 
   describe "#wait_vms" do
-    it "hops to verify_vms if vms are ready" do
+    it "hops to verify_machine_image_boot if vms are ready" do
       vm = create_vm(display_state: "running")
       refresh_frame(vg_test, new_values: {"vms" => [vm.id]})
-      expect { vg_test.wait_vms }.to hop("verify_vms")
+      expect { vg_test.wait_vms }.to hop("verify_machine_image_boot")
     end
 
     it "naps if vms are not running" do
@@ -59,6 +59,54 @@ RSpec.describe Prog::Test::VmGroup do
       expect { vg_test.verify_vms }.to hop("wait_verify_vms")
       children = st.children_dataset.where(prog: "Test::Vm").all
       expect(children.map { it.stack.first.values_at("subject_id", "first_boot") }).to contain_exactly([vm1.id, true], [vm2.id, true])
+    end
+  end
+
+  describe "#verify_machine_image_boot" do
+    let(:service_project_id) { "d61f57f2-83a4-82d2-9b42-7c395259b8ef" }
+
+    it "hops straight to verify_vms when no MI service project is configured" do
+      refresh_frame(vg_test, new_values: {"vms" => []})
+      expect { vg_test.verify_machine_image_boot }.to hop("verify_vms")
+    end
+
+    it "hops to verify_vms when no ubuntu-noble MI exists in the service project" do
+      allow(Config).to receive(:machine_images_service_project_id).and_return(service_project_id)
+      refresh_frame(vg_test, new_values: {"vms" => []})
+      expect { vg_test.verify_machine_image_boot }.to hop("verify_vms")
+    end
+
+    context "with an ubuntu-noble MI captured in the service project" do
+      let(:project) { Project.create_with_id(service_project_id, name: "MachineImage-E2E-Service") }
+      let(:mi) { MachineImage.create_with_id("2a0309b4-3b54-8281-8497-0cf3ee783c68", name: "ubuntu-noble", arch: "x64", project_id: project.id, location_id: Location::HETZNER_FSN1_ID) }
+      let(:miv) { MachineImageVersion.create(machine_image_id: mi.id, version: "20260101", actual_size_mib: 1024) }
+
+      before do
+        allow(Config).to receive(:machine_images_service_project_id).and_return(service_project_id)
+        miv
+      end
+
+      it "passes when an ubuntu-noble VM has machine_image_version_id set on its boot volume" do
+        vm = create_vm(boot_image: "ubuntu-noble")
+        VmStorageVolume.create(vm_id: vm.id, boot: true, size_gib: 10, disk_index: 0, use_bdev_ubi: false, machine_image_version_id: miv.id)
+        refresh_frame(vg_test, new_values: {"vms" => [vm.id]})
+        expect { vg_test.verify_machine_image_boot }.to hop("verify_vms")
+      end
+
+      it "fails when no ubuntu-noble VM exists in the group" do
+        vm = create_vm(boot_image: "ubuntu-jammy")
+        refresh_frame(vg_test, new_values: {"vms" => [vm.id]})
+        expect { vg_test.verify_machine_image_boot }.to hop("failed")
+        expect(st.reload.exitval).to eq({"msg" => "expected at least one ubuntu-noble VM to exercise the MI path"})
+      end
+
+      it "fails when an ubuntu-noble VM has no machine_image_version_id set" do
+        vm = create_vm(boot_image: "ubuntu-noble")
+        VmStorageVolume.create(vm_id: vm.id, boot: true, size_gib: 10, disk_index: 0, use_bdev_ubi: false)
+        refresh_frame(vg_test, new_values: {"vms" => [vm.id]})
+        expect { vg_test.verify_machine_image_boot }.to hop("failed")
+        expect(st.reload.exitval["msg"]).to start_with("VM ").and end_with("(boot_image=ubuntu-noble) did not pick up the captured machine image")
+      end
     end
   end
 

@@ -52,6 +52,28 @@ class Prog::Test::VmGroup < Prog::Test::Base
 
   label def wait_vms
     nap 10 if vms.any? { Vm[it].display_state != "running" }
+    hop_verify_machine_image_boot
+  end
+
+  # When Prog::Test::HetznerServer captured a ubuntu-noble MI, every
+  # subsequent assemble of a VM with boot_image: "ubuntu-noble" should pick
+  # up that MI via the Config.machine_images_service_project_id fallback
+  # in Vm::Nexus.assemble — i.e., the boot volume's machine_image_version_id
+  # should be set instead of the volume getting a plain BootImage. Short-
+  # circuits when the MI infra isn't configured so the rest of the group
+  # test still runs.
+  label def verify_machine_image_boot
+    if Config.machine_images_service_project_id && MachineImage.first(project_id: Config.machine_images_service_project_id, name: "ubuntu-noble")
+      mi_backed = vms.map { Vm[it] }.select { it.boot_image == "ubuntu-noble" }
+      fail_test "expected at least one ubuntu-noble VM to exercise the MI path" if mi_backed.empty?
+      mi_backed.each do |vm|
+        boot_vol = vm.vm_storage_volumes_dataset.first(boot: true)
+        unless boot_vol&.machine_image_version_id
+          fail_test "VM #{vm.ubid} (boot_image=ubuntu-noble) did not pick up the captured machine image"
+        end
+      end
+    end
+
     hop_verify_vms
   end
 
