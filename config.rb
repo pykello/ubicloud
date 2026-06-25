@@ -243,6 +243,10 @@ module Config
   optional :e2e_aws_assume_role, string
   optional :e2e_gcp_credentials_base64_json, string, clear: true
   optional :e2e_cache_proxy_download_url, string
+  optional :e2e_machine_images_r2_endpoint, string
+  optional :e2e_machine_images_r2_bucket, string
+  optional :e2e_machine_images_r2_access_key, string, clear: true
+  optional :e2e_machine_images_r2_secret_key, string, clear: true
 
   # Local e2e
   optional :local_e2e_postgres_test_project_id, uuid
