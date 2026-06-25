@@ -223,6 +223,11 @@ jobs:
         UBICLOUD_IMAGES_R2_ENDPOINT: ${{ secrets.UBICLOUD_IMAGES_R2_ENDPOINT }}
         UBICLOUD_IMAGES_R2_ACCESS_KEY: ${{ secrets.UBICLOUD_IMAGES_R2_ACCESS_KEY }}
         UBICLOUD_IMAGES_R2_SECRET_KEY: ${{ secrets.UBICLOUD_IMAGES_R2_SECRET_KEY }}
+        MACHINE_IMAGES_SERVICE_PROJECT_ID: ${{ secrets.E2E_MACHINE_IMAGES_SERVICE_PROJECT_ID }}
+        E2E_MACHINE_IMAGES_R2_ENDPOINT: ${{ secrets.E2E_MACHINE_IMAGES_R2_ENDPOINT }}
+        E2E_MACHINE_IMAGES_R2_BUCKET: ${{ secrets.E2E_MACHINE_IMAGES_R2_BUCKET }}
+        E2E_MACHINE_IMAGES_R2_ACCESS_KEY: ${{ secrets.E2E_MACHINE_IMAGES_R2_ACCESS_KEY }}
+        E2E_MACHINE_IMAGES_R2_SECRET_KEY: ${{ secrets.E2E_MACHINE_IMAGES_R2_SECRET_KEY }}
         GITHUB_APP_NAME: ${{ secrets.GH_APP_NAME }}
         GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
         GITHUB_APP_CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
@@ -250,6 +255,18 @@ jobs:
       run: |
         set -o pipefail
         timeout 100m foreman start -m all=1,respirate=2 | tee foreman.log | grep --line-buffered -F "e2e.1"
+
+    - name: Empty e2e machine-image bucket
+      if: always() && env.METAL_PAUSED != 'true' && env.E2E_MACHINE_IMAGES_R2_BUCKET != ''
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.E2E_MACHINE_IMAGES_R2_ACCESS_KEY }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.E2E_MACHINE_IMAGES_R2_SECRET_KEY }}
+        AWS_DEFAULT_REGION: auto
+        E2E_MACHINE_IMAGES_R2_ENDPOINT: ${{ secrets.E2E_MACHINE_IMAGES_R2_ENDPOINT }}
+        E2E_MACHINE_IMAGES_R2_BUCKET: ${{ secrets.E2E_MACHINE_IMAGES_R2_BUCKET }}
+      run: |
+        aws --endpoint-url "$E2E_MACHINE_IMAGES_R2_ENDPOINT" \
+            s3 rm "s3://$E2E_MACHINE_IMAGES_R2_BUCKET/" --recursive
 
     - name: Print logs
       if: always() && env.METAL_PAUSED != 'true'
