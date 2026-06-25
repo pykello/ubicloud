@@ -7,6 +7,12 @@ class Prog::Test::HetznerServer < Prog::Test::Base
   frame_reader :server_id, :setup_host?, :default_boot_images, :provider_name
   frame_accessor :hostname, :vm_host_id, :available_storage_gib
 
+  # Stable so re-runs reuse the same MI row and therefore the same R2 prefix
+  # (<project_ubid>/<mi_ubid>/<version>/…), instead of accumulating one
+  # orphan prefix per run. The Project ubid comes from
+  # Config.machine_images_service_project_id (also stable across runs).
+  UBUNTU_NOBLE_MI_ID = "2a0309b4-3b54-8281-8497-0cf3ee783c68" # m1581gkd1vaj0gjbgswzef0y6g
+
   def self.assemble(vm_host_id: nil, default_boot_images: [])
     frame = if vm_host_id
       vm_host = VmHost[vm_host_id]
@@ -86,6 +92,49 @@ class Prog::Test::HetznerServer < Prog::Test::Base
       nap 15
     end
     self.available_storage_gib = vm_host.available_storage_gib + vm_host.boot_images.sum(&:size_gib)
+
+    hop_setup_machine_image
+  end
+
+  # Captures ubuntu-noble into the platform machine image store so the
+  # downstream VmGroup test can boot from it via the Config-driven
+  # service-project fallback in Vm::Nexus.assemble. Short-circuits to
+  # verify_encrypted_swap when any required Config isn't set, so the
+  # rest of the HetznerServer test still runs without MI infra.
+  label def setup_machine_image
+    hop_verify_encrypted_swap unless mi_test_enabled?
+
+    project = Project[Config.machine_images_service_project_id] ||
+      Project.create_with_id(Config.machine_images_service_project_id, name: "MachineImage-E2E-Service")
+
+    store = MachineImageStore.first(project_id: project.id, location_id: vm_host.location_id) ||
+      MachineImageStore.create(
+        project_id: project.id, location_id: vm_host.location_id,
+        provider: "r2", region: "auto",
+        endpoint: Config.e2e_machine_images_r2_endpoint,
+        bucket: Config.e2e_machine_images_r2_bucket,
+        access_key: Config.e2e_machine_images_r2_access_key,
+        secret_key: Config.e2e_machine_images_r2_secret_key,
+      )
+
+    mi = MachineImage[UBUNTU_NOBLE_MI_ID] ||
+      MachineImage.create_with_id(UBUNTU_NOBLE_MI_ID,
+        name: "ubuntu-noble", arch: vm_host.arch,
+        project_id: project.id, location_id: vm_host.location_id)
+
+    miv = mi.versions_dataset.where(version: ubuntu_noble_version).first
+    if miv.nil?
+      Prog::MachineImage::VersionMetalNexus.assemble_from_url(mi, ubuntu_noble_version,
+        ubuntu_noble_url, ubuntu_noble_sha256, store)
+    end
+
+    hop_wait_machine_image
+  end
+
+  label def wait_machine_image
+    miv = MachineImage[UBUNTU_NOBLE_MI_ID].versions_dataset.where(version: ubuntu_noble_version).first
+    fail_test "ubuntu-noble machine image archive failed" if miv&.metal&.status == "failed"
+    nap 30 unless miv&.metal&.status == "ready"
 
     hop_verify_encrypted_swap
   end
@@ -208,5 +257,35 @@ class Prog::Test::HetznerServer < Prog::Test::Base
 
   def vm_host
     @vm_host ||= VmHost[vm_host_id]
+  end
+
+  # Whether to capture a ubuntu-noble MI as part of the host setup.
+  # Requires both an R2 store config (so the archive has somewhere to land)
+  # and a service-project id (so Vm::Nexus.assemble's
+  # machine_images_service_project_id fallback can find the MI when
+  # downstream tests boot VMs with boot_image: "ubuntu-noble").
+  def mi_test_enabled?
+    Config.machine_images_service_project_id &&
+      Config.e2e_machine_images_r2_endpoint &&
+      Config.e2e_machine_images_r2_bucket &&
+      Config.e2e_machine_images_r2_access_key &&
+      Config.e2e_machine_images_r2_secret_key
+  end
+
+  def ubuntu_noble_versions
+    Prog::DownloadBootImage::BOOT_IMAGE_SHA256.fetch("ubuntu-noble").fetch(vm_host.arch)
+  end
+
+  def ubuntu_noble_version
+    @ubuntu_noble_version ||= ubuntu_noble_versions.keys.max
+  end
+
+  def ubuntu_noble_sha256
+    ubuntu_noble_versions.fetch(ubuntu_noble_version)
+  end
+
+  def ubuntu_noble_url
+    arch = vm_host.render_arch(arm64: "arm64", x64: "amd64")
+    "https://cloud-images.ubuntu.com/releases/noble/release-#{ubuntu_noble_version}/ubuntu-24.04-server-cloudimg-#{arch}.img"
   end
 end

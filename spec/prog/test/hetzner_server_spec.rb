@@ -102,9 +102,96 @@ RSpec.describe Prog::Test::HetznerServer do
       expect { hs_test.wait_setup_host }.to nap(15)
     end
 
-    it "hops to verify_encrypted_swap if the host is ready" do
+    it "hops to setup_machine_image if the host is ready" do
       vm_host.strand.update(label: "wait")
-      expect { hs_test.wait_setup_host }.to hop("verify_encrypted_swap")
+      expect { hs_test.wait_setup_host }.to hop("setup_machine_image")
+    end
+  end
+
+  describe "#setup_machine_image" do
+    let(:service_project_id) { "d61f57f2-83a4-82d2-9b42-7c395259b8ef" }
+    let(:noble_version) { Prog::DownloadBootImage::BOOT_IMAGE_SHA256.fetch("ubuntu-noble").fetch("x64").keys.max }
+
+    it "short-circuits to verify_encrypted_swap when MI configs are missing" do
+      expect { hs_test.setup_machine_image }.to hop("verify_encrypted_swap")
+      expect(MachineImage[described_class::UBUNTU_NOBLE_MI_ID]).to be_nil
+    end
+
+    context "with MI configs present" do
+      before do
+        vm_host.update(arch: "x64")
+        allow(Config).to receive_messages(
+          machine_images_service_project_id: service_project_id,
+          e2e_machine_images_r2_endpoint: "https://r2.example.com",
+          e2e_machine_images_r2_bucket: "e2e-test",
+          e2e_machine_images_r2_access_key: "ak",
+          e2e_machine_images_r2_secret_key: "sk",
+        )
+      end
+
+      it "creates project, store and machine image and triggers the capture" do
+        expect(Prog::MachineImage::VersionMetalNexus).to receive(:assemble_from_url) do |mi, version, url, sha, store|
+          expect(mi.id).to eq(described_class::UBUNTU_NOBLE_MI_ID)
+          expect(version).to eq(noble_version)
+          expect(url).to include("ubuntu-24.04-server-cloudimg-amd64").and include(noble_version)
+          expect(sha).to eq(Prog::DownloadBootImage::BOOT_IMAGE_SHA256.fetch("ubuntu-noble").fetch("x64").fetch(noble_version))
+          expect(store.project_id).to eq(service_project_id)
+        end
+        expect { hs_test.setup_machine_image }.to hop("wait_machine_image")
+        expect(Project[service_project_id]).not_to be_nil
+        expect(MachineImage[described_class::UBUNTU_NOBLE_MI_ID]).to have_attributes(name: "ubuntu-noble", arch: "x64")
+      end
+
+      it "skips assemble_from_url when a version row for the version already exists" do
+        project = Project.create_with_id(service_project_id, name: "MachineImage-E2E-Service")
+        store = MachineImageStore.create(project_id: project.id, location_id: vm_host.location_id,
+          provider: "r2", region: "auto", endpoint: "e", bucket: "b", access_key: "a", secret_key: "s")
+        mi = MachineImage.create_with_id(described_class::UBUNTU_NOBLE_MI_ID, name: "ubuntu-noble",
+          arch: "x64", project_id: project.id, location_id: vm_host.location_id)
+        MachineImageVersion.create(machine_image_id: mi.id, version: noble_version, actual_size_mib: 1024)
+
+        expect(Prog::MachineImage::VersionMetalNexus).not_to receive(:assemble_from_url)
+        expect { hs_test.setup_machine_image }.to hop("wait_machine_image")
+      end
+    end
+  end
+
+  describe "#wait_machine_image" do
+    let(:service_project_id) { "d61f57f2-83a4-82d2-9b42-7c395259b8ef" }
+    let(:noble_version) { Prog::DownloadBootImage::BOOT_IMAGE_SHA256.fetch("ubuntu-noble").fetch("x64").keys.max }
+    let(:project) { Project.create_with_id(service_project_id, name: "MachineImage-E2E-Service") }
+    let(:store) { MachineImageStore.create(project_id: project.id, location_id: vm_host.location_id, provider: "r2", region: "auto", endpoint: "e", bucket: "b", access_key: "a", secret_key: "s") }
+    let(:mi) { MachineImage.create_with_id(described_class::UBUNTU_NOBLE_MI_ID, name: "ubuntu-noble", arch: "x64", project_id: project.id, location_id: vm_host.location_id) }
+    let(:archive_kek) { StorageKeyEncryptionKey.create_random(auth_data: "k") }
+
+    before { vm_host.update(arch: "x64") }
+
+    def seed_metal(status:)
+      miv = MachineImageVersion.create(machine_image_id: mi.id, version: noble_version, actual_size_mib: 1024)
+      MachineImageVersionMetal.create_with_id(miv, status:,
+        archive_size_mib: (status == "ready") ? 1 : nil,
+        archive_kek_id: archive_kek.id, store_id: store.id, store_prefix: "p")
+    end
+
+    it "naps while the metal version is still creating" do
+      seed_metal(status: "creating")
+      expect { hs_test.wait_machine_image }.to nap(30)
+    end
+
+    it "naps when no metal version exists yet" do
+      mi
+      expect { hs_test.wait_machine_image }.to nap(30)
+    end
+
+    it "hops to verify_encrypted_swap once the metal version is ready" do
+      seed_metal(status: "ready")
+      expect { hs_test.wait_machine_image }.to hop("verify_encrypted_swap")
+    end
+
+    it "fails the test when the archive ends in 'failed'" do
+      seed_metal(status: "failed")
+      expect { hs_test.wait_machine_image }.to hop("failed")
+      expect(strand.reload.exitval).to eq({"msg" => "ubuntu-noble machine image archive failed"})
     end
   end
 
