@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "json"
+require_relative "../lib/remote_storage_server"
+
+vm_name, storage_device, disk_index, version, port, psk_identity = ARGV
+secrets = JSON.parse($stdin.read)
+# For the v2 config the kek pipe expects the base64 aes-256-gcm key.
+kek_payload = secrets.fetch("kek").fetch("key")
+psk = secrets.fetch("psk")
+
+RemoteStorageServer.new(vm_name, storage_device, disk_index, version)
+  .run(port, psk, psk_identity, kek_payload)
