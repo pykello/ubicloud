@@ -32,6 +32,8 @@ class Clover < Roda
         ::OidcProvider => [:[], :name_for_ubid, :identity_name_hash, :with_pk!],
         ::ParseableResource => [:client_for_project],
         ::PaymentMethod => [:fraud?],
+        ::Ember => [:[], :where],
+        ::PostgresEmber => [:[], :where],
         ::PostgresLogDestination => [:url_prefix],
         ::PostgresResource => [:default_flavor, :default_version, :ha_type_none, :generate_postgres_options, :maintenance_hour_options, :maintenance_window_days_mask],
         ::PostgresServer => [:victoria_metrics_client, :restart_sensitive_params],
