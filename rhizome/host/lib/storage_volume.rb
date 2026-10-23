@@ -47,6 +47,9 @@ class StorageVolume
     @allowed_cpus = params["allowed_cpus"]
     @archive_source = params["archive_source"]
     @remote_source = params["remote_source"]
+    # A detachable volume is owned by whichever VM's user it is attached to
+    # (vm_name), and has its own directory and backend service.
+    @detachable_volume_id = params["detachable_volume_id"]
   end
 
   def vp
@@ -170,8 +173,10 @@ class StorageVolume
       "--kek #{sp.kek_pipe}"
     end
 
-    if @archive_source || @remote_source
+    if @archive_source || @remote_source || @detachable_volume_id
       # An archive (S3) or remote stripe source needs outbound network access.
+      # A detachable volume restarted on the same host is started without its
+      # remote source, which it may still be fetching from.
       restrict_address_families = "AF_UNIX AF_INET AF_INET6"
       private_network = "no"
     else
@@ -187,7 +192,7 @@ class StorageVolume
     service_file_path = "/etc/systemd/system/#{vhost_user_block_service}"
     File.write(service_file_path, <<~SERVICE)
         [Unit]
-        Description=Vhost Block Backend Service for #{@vm_name}
+        Description=Vhost Block Backend Service for #{@detachable_volume_id || @vm_name}
         After=network.target
 
         [Service]
@@ -446,6 +451,14 @@ class StorageVolume
     # Stop the service in case this is a retry.
     r "systemctl", "stop", vhost_user_block_service
 
+    # A detachable volume may be started for a different VM than it was last
+    # used by, so hand it and its service to that VM's user.
+    if @detachable_volume_id
+      FileUtils.chown_R(@vm_name, @vm_name, storage_dir)
+      vhost_backend_create_service_file
+      r "systemctl", "daemon-reload"
+    end
+
     rm_if_exists(vhost_sock)
     rm_if_exists(sp.rpc_socket_path)
 
@@ -699,11 +712,11 @@ class StorageVolume
   end
 
   def vhost_user_block_service
-    @vhost_user_block_service ||= "#{@vm_name}-#{@disk_index}-storage.service" if @vhost_backend_version
+    @vhost_user_block_service ||= sp.vhost_backend_service if @vhost_backend_version
   end
 
   def sp
-    @sp ||= StoragePath.new(@vm_name, @device, @disk_index)
+    @sp ||= @detachable_volume_id ? StoragePath.detachable(@detachable_volume_id) : StoragePath.new(@vm_name, @device, @disk_index)
   end
 
   def storage_root

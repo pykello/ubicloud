@@ -1,0 +1,40 @@
+#!/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/storage_volume"
+require "json"
+
+command, id = ARGV
+unless %w[start delete].include?(command) && id
+  warn "usage: detachable-volume start|delete <volume-id>"
+  exit 1
+end
+
+sp = StoragePath.detachable(id)
+
+case command
+when "start"
+  # See DetachableVolume#start_params.
+  params = JSON.parse($stdin.read)
+  volume = StorageVolume.new(params.fetch("unix_user"), params.fetch("storage_volume").merge("detachable_volume_id" => id))
+  kek = params.fetch("kek")
+
+  # Unless the volume's data is already here, lay it out afresh, over
+  # whatever an interrupted layout left.
+  if params.fetch("prep")
+    rm_if_exists(sp.storage_dir)
+    volume.prep(kek)
+  end
+  volume.start(kek)
+  puts JSON.generate({"vhost_sock" => sp.vhost_sock})
+when "delete"
+  begin
+    r "systemctl", "stop", sp.vhost_backend_service
+  rescue CommandFail => e
+    # The volume was never started on this host, or was already deleted.
+    raise unless e.stderr.include?("not loaded")
+  end
+  rm_if_exists("/etc/systemd/system/#{sp.vhost_backend_service}")
+  rm_if_exists(sp.storage_dir)
+  puts JSON.generate({"deleted" => true})
+end
