@@ -847,6 +847,59 @@ RSpec.describe StorageVolume do
     end
   end
 
+  describe "a detachable volume" do
+    subject(:dv) {
+      described_class.new("user0", {
+        "detachable_volume_id" => volume_id,
+        "device_id" => "dvdev",
+        "encrypted" => true,
+        "size_gib" => 2,
+        "vhost_block_backend_version" => "v0.5.1",
+      })
+    }
+
+    let(:volume_id) { "dv#{"0" * 24}" }
+    let(:dir) { "/var/storage/detachable/#{volume_id}" }
+
+    it "lives in a directory of its own, whatever its owner" do
+      expect(dv.storage_dir).to eq(dir)
+      expect(dv.storage_root).to eq(dir)
+      expect(dv.disk_file).to eq("#{dir}/disk.raw")
+      expect(dv.sp.vhost_backend_config).to eq("#{dir}/vhost-backend.conf")
+      expect(dv.sp.kek_pipe).to eq("#{dir}/kek.pipe")
+    end
+
+    it "has a backend service named after the volume, not its owner" do
+      expect(dv.vhost_user_block_service).to eq("#{volume_id}-storage.service")
+    end
+
+    it "refuses an id that could reach outside the volume root" do
+      expect { StoragePath.detachable("../../..") }.to raise_error(ArgumentError, 'invalid detachable volume id: "../../.."')
+    end
+
+    it "runs its backend as its owner, with network access to fetch from a remote source" do
+      expect(File).to receive(:write).with("/etc/systemd/system/#{volume_id}-storage.service", satisfy { |content|
+        content.include?("Description=Vhost Block Backend Service for #{volume_id}") &&
+          content.include?("User=user0") &&
+          content.include?("ReadWritePaths=#{dir}") &&
+          content.include?("PrivateNetwork=no")
+      })
+      dv.vhost_backend_create_service_file
+    end
+
+    it "hands itself and its service to its current owner when started" do
+      expect(dv).to receive(:_run_command).with("systemctl", "stop", "#{volume_id}-storage.service").ordered
+      expect(FileUtils).to receive(:chown_R).with("user0", "user0", dir).ordered
+      expect(dv).to receive(:vhost_backend_create_service_file).ordered
+      expect(dv).to receive(:_run_command).with("systemctl", "daemon-reload").ordered
+      expect(dv).to receive(:rm_if_exists).twice
+      expect(dv).to receive(:with_kek_pipe).with("#{dir}/kek.pipe", owner: "user0").and_yield("pipe")
+      expect(dv).to receive(:_run_command).with("systemctl", "start", "#{volume_id}-storage.service")
+      expect(dv).to receive(:write_kek_to_pipe).with("pipe", "a2V5")
+      dv.vhost_backend_start({"key" => "a2V5"})
+    end
+  end
+
   describe "#vhost_backend_start" do
     it "can start an encrypted vhost backend" do
       algorithm = "aes-256-gcm"
