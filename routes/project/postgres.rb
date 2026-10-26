@@ -28,8 +28,24 @@ class Clover
       end
 
       r.get "create" do
-        authorize("Postgres:create", @project)
-        view "postgres/create"
+        # One product, two shapes. The chooser is the default so that neither
+        # is buried: dedicated is what production wants, an ember is what a
+        # test, a preview or a laptop wants.
+        # A flavor on its own means a dedicated database, so anything
+        # bookmarked before embers existed still lands on the form.
+        flavor = typecast_params.nonempty_str("flavor")
+        case typecast_params.nonempty_str("type") || (flavor && "dedicated")
+        when "ember"
+          authorize("PostgresEmber:create", @project)
+          postgres_ember_create_options
+          view "postgres/ember_create"
+        when "dedicated"
+          authorize("Postgres:create", @project)
+          view "postgres/create"
+        else
+          authorize("Postgres:view", @project)
+          view "postgres/choose_type"
+        end
       end
     end
   end

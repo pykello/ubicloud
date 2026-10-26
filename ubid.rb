@@ -119,6 +119,11 @@ class UBID
   TYPE_POSTGRES_LOG_DESTINATION = "1d"
   TYPE_RUN_COMMAND = "rc"
   TYPE_DETACHABLE_VOLUME = "dv"
+  TYPE_EMBER = "cc"
+  TYPE_EMBER_POOL = "cp"
+  TYPE_EMBER_TEMPLATE = "ct"
+  TYPE_POSTGRES_GATEWAY = "gw"
+  TYPE_POSTGRES_GATEWAY_REPLICA = "gk"
 
   # Common entropy-based type for everything else
   TYPE_ETC = "et"

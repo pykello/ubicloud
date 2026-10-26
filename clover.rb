@@ -94,6 +94,7 @@ class Clover < Roda
     LoadBalancer,
     MachineImage,
     PostgresResource,
+    PostgresEmber,
     PrivateSubnet,
     SshPublicKey,
     Vm,
@@ -141,6 +142,7 @@ class Clover < Roda
     ObjectTag
     PaymentMethod
     PostgresResource
+    PostgresEmber
     PrivateSubnet
     SshPublicKey
     SubjectTag
@@ -160,7 +162,7 @@ class Clover < Roda
   # simplecov:enable
 
   plugin :host_routing, scope_predicates: true do |hosts|
-    hosts.register :api, :web, :runtime, :admin
+    hosts.register :api, :web, :runtime, :admin, :internal
     hosts.default :web do |host|
       if host.start_with?("api.")
         :api
@@ -168,6 +170,9 @@ class Clover < Roda
         :admin
       elsif request.path_info == "/runtime" || request.path_info.start_with?("/runtime/")
         :runtime
+      elsif request.path_info.start_with?("/internal/")
+        # The ember gateways' private API. Not a session-bearing scope.
+        :internal
       end
     end
   end
@@ -224,7 +229,7 @@ class Clover < Roda
       message: "Sorry, we couldn’t find the resource you’re looking for.",
     }
 
-    if api? || request.accepts_json?
+    if api? || internal? || request.accepts_json?
       {error: @error}.to_json
     else
       view "error"
@@ -321,7 +326,7 @@ class Clover < Roda
 
     error = {code:, type:, message:, details:}
 
-    if runtime?
+    if runtime? || internal?
       error
     elsif api? || request.accepts_json? || !%w[GET POST].freeze.include?(request.request_method)
       {error:}
@@ -1091,6 +1096,18 @@ class Clover < Roda
 
   route do |r|
     if api?
+      # Obtaining an ember needs no account, which is the point of the
+      # product, so that surface runs ahead of authentication: there is no
+      # personal access token to present. It carries a per-ember token of
+      # its own and is limited per source address instead. The branch always
+      # answers, so nothing below sees these paths.
+      if %r{\A/postgres-ember(/|\z)}.match?(r.path_info)
+        response.json = true
+        response.skip_content_security_policy!
+        before_main_hash_branches
+        r.hash_branches(:anonymous_prefix)
+      end
+
       unless /\ABearer:?\s+pat-/i.match?(env["HTTP_AUTHORIZATION"].to_s)
         if r.path_info == "/cli"
           response.content_type = :text
@@ -1114,6 +1131,18 @@ class Clover < Roda
       end
     elsif r.admin?
       r.run(CloverAdmin.app)
+    elsif r.internal?
+      response.json = true
+      response.skip_content_security_policy!
+
+      unless valid_gateway_token?
+        fail CloverError.new(401, "Unauthorized", "invalid or missing gateway token")
+      end
+
+      r.on "internal" do
+        before_main_hash_branches
+        r.hash_branches(:internal_prefix)
+      end
     else
       r.on "runtime" do
         response.json = true

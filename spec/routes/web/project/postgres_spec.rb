@@ -38,7 +38,7 @@ RSpec.describe Clover, "postgres" do
     end
 
     it "cannot create without login" do
-      visit "/postgres/create"
+      visit "/postgres/create?type=dedicated&flavor=standard"
 
       expect(page.title).to eq("Ubicloud - Login")
     end
@@ -77,6 +77,12 @@ RSpec.describe Clover, "postgres" do
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
       end
 
+      it "goes straight to the ember form from the other card" do
+        visit "#{project.path}/postgres/create"
+        click_link "Ember"
+        expect(page.title).to eq("Ubicloud - Create PostgreSQL Ember")
+      end
+
       it "can list only the postgres databases which has permissions to" do
         pg
         pg_wo_permission
@@ -85,6 +91,9 @@ RSpec.describe Clover, "postgres" do
         expect(page.title).to eq("Ubicloud - PostgreSQL Databases")
         expect(page).to have_content pg.name
         expect(page).to have_no_content pg_wo_permission.name
+        # No embers, so no table for them.
+        expect(page).to have_table(count: 1)
+        expect(page).to have_no_content "Embers"
       end
 
       it "can list PostgreSQL databases with parents" do
@@ -105,7 +114,7 @@ RSpec.describe Clover, "postgres" do
 
     describe "create" do
       it "can create new PostgreSQL database" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
@@ -126,7 +135,7 @@ RSpec.describe Clover, "postgres" do
       it "prices n2d storage from the family's own rate on the create page" do
         project.set_ff_enable_n2d_highmem(true)
         project.set_ff_visible_postgres_locations(["gcp-us-central1"])
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         rate = BillingRate.from_resource_properties("PostgresStorage", "standard-n2d-highmem", "gcp-us-central1")
         expect(page.html).to include("$#{"%.2f" % (3000 * rate["unit_price"].to_f * 60 * 672)}/mo")
@@ -146,7 +155,7 @@ RSpec.describe Clover, "postgres" do
         # Delete seeded aws-us-west-2 location to avoid display_name conflict
         Location.where(display_name: "aws-us-west-2", project_id: nil).destroy
 
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
@@ -167,7 +176,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "pre-selects the default version rather than the newest one offered" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         checked = all("input[name=version]", visible: false).select(&:checked?).map { |input| input.value }
         expect(checked).to eq([PostgresResource.default_version])
@@ -175,7 +184,7 @@ RSpec.describe Clover, "postgres" do
 
       it "can specify an init script when creating new PostgreSQL database" do
         project.set_ff_postgres_init_script(true)
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
@@ -195,7 +204,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "can create new PostgreSQL database without firewall rules" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
@@ -216,7 +225,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "handles errors when creating new PostgreSQL database" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
@@ -234,7 +243,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "cannot create new PostgreSQL database with invalid location" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated"
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
         name = "new-pg-db"
         fill_in "Name", with: name
@@ -255,7 +264,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "can not create PostgreSQL database with same name" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated&flavor=standard"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
 
@@ -271,7 +280,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "can not select invisible location" do
-        visit "#{project.path}/postgres/create"
+        visit "#{project.path}/postgres/create?type=dedicated&flavor=standard"
 
         expect(page.title).to eq("Ubicloud - Create PostgreSQL Database")
 
@@ -280,7 +289,7 @@ RSpec.describe Clover, "postgres" do
 
       it "can not create PostgreSQL database in a project when does not have permissions" do
         project_wo_permissions
-        visit "#{project_wo_permissions.path}/postgres/create"
+        visit "#{project_wo_permissions.path}/postgres/create?type=dedicated&flavor=standard"
 
         expect(page.title).to eq("Ubicloud - Forbidden")
         expect(page.status_code).to eq(403)
@@ -288,7 +297,7 @@ RSpec.describe Clover, "postgres" do
       end
 
       it "cannot create when location not exist" do
-        visit "#{project.path}/location/not-exist-location/postgres/create"
+        visit "#{project.path}/location/not-exist-location/postgres/create?type=dedicated&flavor=standard"
 
         expect(page.title).to eq("Ubicloud - ResourceNotFound")
         expect(page.status_code).to eq(404)

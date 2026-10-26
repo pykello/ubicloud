@@ -205,6 +205,16 @@ class Prog::DownloadBootImage < Prog::Base
         "20261009.1.0" => "2a47337f499363a2a6ec433524fb71c36b0c906418b2adca0cd2370d0688b9c3",
       },
     },
+    "postgres-cell-root-18" => {
+      "x64" => {
+        "20260925.1.0" => "bb3d9a3b287443b1e551a32a73afd3e7be447fb87d9e167a6429e9c75d733148",
+      },
+    },
+    "postgres-cell-pgdata-18" => {
+      "x64" => {
+        "20260925.1.0" => "62e029d981fd534811e0bf0cfed28a91dbc2f0c1e1612c4415c2aee24d4879a3",
+      },
+    },
     "ai-ubuntu-2404-nvidia" => {
       "x64" => {
         "20250505.1.0" => "8d438d372238d46739ace4337634f3489dc4f18496a970fda6b6e60226307eaa",
