@@ -90,7 +90,7 @@ class Prog::Ember::Pool < Prog::Base
         "workload" => template.workload,
         "guest" => workload_class.blank_guest_config,
         "cpu_percent_limit" => workload_class.default_cpu_percent_limit,
-        "volume" => blank_volume_payload(template, volume),
+        "volume" => host.ember.volume_payload(volume),
       })
       volume.record_host(host:, caught_up: true)
     rescue Sshable::SshError, *Sshable::SSH_CONNECTION_ERRORS => e
@@ -141,17 +141,6 @@ class Prog::Ember::Pool < Prog::Base
       .where(state: "ready", cpu_signature: host.cpu_signature)
       .order(Sequel.desc(:created_at))
       .first
-  end
-
-  # It reads through to the template's seed image until written, so "empty"
-  # already means an initialised cluster; without the image name there is
-  # nothing to read through to.
-  def blank_volume_payload(template, volume)
-    {
-      "id" => volume.ubid,
-      "size_gib" => volume.size_gib,
-      "source" => {"type" => "new", "image" => template.data_image},
-    }.merge(volume.key_material)
   end
 
   label def destroy

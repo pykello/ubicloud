@@ -65,6 +65,14 @@ class VmHostEmber
      "ubiblk_version" => ubiblk_version}
   end
 
+  # What host/bin/ember needs to start a volume here, or nil when it cannot
+  # start here. The host runs it as the user of the slot it lands in.
+  def volume_payload(volume)
+    params = volume.start_params(vm_host, unix_user: nil, device_id: "cldata",
+      vhost_block_backend_version: ubiblk_version, slice_name: "ember.slice")
+    params && {"id" => volume.ubid}.merge(params.except("unix_user"))
+  end
+
   # The newest ubiblk on the host that embers can run on.
   def ubiblk_version
     backend = vm_host.vhost_block_backends_dataset

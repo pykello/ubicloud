@@ -83,12 +83,12 @@ RSpec.describe Prog::Ember::Pool do
         payload = JSON.parse(kw[:stdin])
         expect(payload.slice("template_id", "workload", "guest", "cpu_percent_limit"))
           .to eq({"template_id" => template.ubid, "workload" => "fake", "guest" => {}, "cpu_percent_limit" => 50})
-        expect(payload["volume"]["source"]).to eq({"type" => "new", "image" => template.data_image})
+        expect(payload["volume"]["prep"]).to be(true)
+        expect(payload["volume"]["storage_volume"]["image"]).to eq(template.data_image)
         # The volume is the control plane's, named and keyed by it, because a
         # claim keeps it.
         expect(DetachableVolume[payload["volume"]["id"]]).not_to be_nil
         expect(payload["volume"]["kek"]).not_to be_nil
-        expect(payload["volume"]["wrapped_xts"]).not_to be_nil
         {}
       }
       expect { nx.refill }.to nap(described_class::POLL_SECONDS)
