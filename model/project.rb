@@ -23,6 +23,7 @@ class Project < Sequel::Model
   one_to_many :inference_endpoints, read_only: true
   one_to_many :kubernetes_clusters, read_only: true
   one_to_many :machine_images, read_only: true
+  one_to_many :embers, read_only: true
   one_to_many :machine_image_stores, read_only: true
   one_to_many :ssh_public_keys, order: :name, remover: nil, clearer: nil
 
@@ -234,6 +235,7 @@ class Project < Sequel::Model
       .union(kubernetes_clusters_dataset.association_join(:nodepools).select(:node_count, Sequel[:nodepools][:target_node_size]), all: true)
       .all.sum { it[:node_count] * Validation.validate_vm_size(it[:target_node_size], "x64").vcpus } || 0
     when "MachineImageVersion" then MachineImageVersion.where(machine_image_id: machine_images_dataset.select(:id)).count
+    when "PostgresEmberCount" then PostgresEmber.where(id: embers_dataset.select(:id)).count
     else
       raise "Unknown resource type: #{resource_type}"
     end
@@ -384,6 +386,7 @@ end
 #  api_key                   | api_key_project_id_fkey                   | (project_id) REFERENCES project(id)
 #  detachable_volume         | detachable_volume_project_id_fkey         | (project_id) REFERENCES project(id)
 #  dns_zone                  | dns_zone_project_id_fkey                  | (project_id) REFERENCES project(id)
+#  ember                     | ember_project_id_fkey                     | (project_id) REFERENCES project(id)
 #  firewall                  | firewall_project_id_fkey                  | (project_id) REFERENCES project(id)
 #  gcp_vpc                   | gcp_vpc_project_id_fkey                   | (project_id) REFERENCES project(id)
 #  github_installation       | github_installation_project_id_fkey       | (project_id) REFERENCES project(id)

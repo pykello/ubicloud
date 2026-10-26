@@ -378,6 +378,95 @@ RSpec.configure do |config|
       metal
     end
 
+    # A host brought up to run embers: 64 GiB of memory, which sets
+    # VmHostEmber#max_slots, and a ubiblk embers can run on.
+    def create_ember_host(vm_host: create_vm_host, **args)
+      defaults = {accepts_embers: true, cpu_signature: "AuthenticAMD-25-97-2/53.0", total_mem_gib: 64,
+                  total_hugepages_1g: 0, used_hugepages_1g: 0}
+      defaults[:net6] = "fd00:#{SecureRandom.hex(2)}::/64" unless vm_host.net6
+      vm_host.update(defaults.merge(args))
+      VhostBlockBackend.create(vm_host_id: vm_host.id, version: "v0.5.1", allocation_weight: 0)
+      vm_host
+    end
+
+    # Blanks waiting on a host: the warm pool's volumes there that no ember
+    # owns yet.
+    def add_ember_blanks(vm_host, count)
+      Array.new(count) { create_detachable_volume(vm_host_id: vm_host.id) }
+    end
+
+    # A workload to exercise the ember layer with and no real one: it places
+    # anywhere and has nothing to configure.
+    def stub_ember_workload
+      stub_const("FakeEmber", Class.new do
+        def self.default_volume_size_gib = 2
+
+        def self.default_cpu_percent_limit = 50
+
+        def self.default_idle_timeout_seconds = 300
+
+        def self.blank_guest_config = {}
+
+        def self.placeable_hosts(hosts) = hosts
+      end)
+    end
+
+    def create_ember_pool(**args)
+      defaults = {location_id: Location::HETZNER_FSN1_ID, workload: "postgres"}
+      pool = EmberPool.create(**defaults.merge(args))
+      Strand.create_with_id(pool, prog: "Ember::Pool", label: "wait")
+      pool
+    end
+
+    def create_ember_template(**args)
+      defaults = {location_id: Location::HETZNER_FSN1_ID, arch: "x64",
+                  cpu_signature: "AuthenticAMD-25-97-2/53.0", workload: "postgres", version: "18",
+                  root_image: "cell-root-18", data_image: "cell-pgdata-18",
+                  ch_version: "53.0", state: "ready"}
+      EmberTemplate.create(**defaults.merge(args))
+    end
+
+    def create_ember(**args)
+      defaults = {location_id: Location::HETZNER_FSN1_ID, name: "test-ember"}
+      args = defaults.merge(args)
+      args[:project_id] ||= Project.create(name: "ember-project").id
+      args[:ember_template_id] ||= create_ember_template.id
+      ember = Ember.create(**args)
+      create_detachable_volume(project_id: ember.project_id, owner_id: ember.id)
+      ember
+    end
+
+    # Returns the PostgresEmber; its Ember is reachable through #ember. Keys that
+    # belong to the Postgres row are peeled off and the rest go to the ember.
+    def create_postgres_ember(**args)
+      pg_keys = [:pg_version, :database_name, :superuser_password, :claim_token_digest,
+        :claimed_at, :creator_ip]
+      pg = {superuser_password: "ember-secret"}.merge(args.slice(*pg_keys))
+      PostgresEmber.create_with_id(create_ember(**args.except(*pg_keys)).id, **pg)
+    end
+
+    # Answer host/bin/ember on whichever host is asked, with what the block returns.
+    # The block gets the command, its keywords (the id placeholder among them)
+    # and the host's Sshable. The code under test loads hosts afresh, so this
+    # stubs the class rather than one object.
+    def on_ember_command
+      allow_any_instance_of(Sshable).to receive(:cmd_json) do |sshable, cmd, **kw|
+        stdin = JSON.parse(kw.fetch(:stdin))
+        expect(stdin.delete("host")).to eq(VmHost[sshable.id].ember.host_config)
+        yield(cmd.delete_prefix("sudo host/bin/ember ").split.first, kw.merge(stdin: stdin.to_json), sshable)
+      end
+    end
+
+    # What host/bin/ember prints and exits 1 with for a failure the caller acts on.
+    def ember_command_failure(error)
+      Sshable::SshError.new("sudo host/bin/ember", {"error" => error, "detail" => error}.to_json, "", 1, nil)
+    end
+
+    # A host/bin/ember command that failed without saying why.
+    def ember_command_crash(stderr = "failed")
+      Sshable::SshError.new("sudo host/bin/ember", "", stderr, 1, nil)
+    end
+
     def create_detachable_volume(**args)
       kek = StorageKeyEncryptionKey.create_random(auth_data: "detachable-volume")
       defaults = {location_id: Location::HETZNER_FSN1_ID, source_image: "ubuntu-noble", size_gib: 2,
