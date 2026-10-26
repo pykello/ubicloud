@@ -24,7 +24,9 @@ RSpec.describe EmberManager do
 
   let(:volume) { instance_double(DetachableVolume, id: "dv1") }
 
-  let(:volume_args) { {volume_id: "dv1", size_gib: 2, kek: "kek", wrapped_xts: "w", source: {"type" => "new", "image" => "seed"}} }
+  let(:storage_volume) { {"vhost_block_backend_version" => "v0.5.1", "device_id" => "cldata", "slice_name" => "ember.slice"} }
+
+  let(:volume_args) { {volume_id: "dv1", kek: "kek", prep: true, storage_volume: storage_volume} }
 
   let(:create_args) {
     {ember_id: "ember1", generation: nil, template_id: "ct1", workload: "fake", **volume_args,
@@ -48,7 +50,7 @@ RSpec.describe EmberManager do
     allow(guest).to receive_messages(wait_ready: nil, configure: nil)
     allow(DetachableVolume).to receive(:new).and_return(volume)
     allow(volume).to receive_messages(exist?: false, ensure_started: nil, stop: nil,
-      destroy: nil, caught_up?: true, vhost_sock: "/vol/vhost.sock", stripes: {}, remote_source?: false)
+      delete: nil, caught_up?: true, vhost_sock: "/vol/vhost.sock", stripes: {}, remote_source?: false)
   end
 
   describe "#setup" do
@@ -56,8 +58,7 @@ RSpec.describe EmberManager do
       expect(File).to receive(:exist?).with("/opt/cloud-hypervisor/v53.0/cloud-hypervisor").and_return(true)
       expect(File).to receive(:exist?).with("/opt/cloud-hypervisor/v53.0/ch-remote").and_return(true)
       expect(Dir).to receive(:glob).with(File.expand_path("../lib/guest_*_manager.rb", __dir__)).and_return([])
-      expect(FileUtils).to receive(:mkdir_p).with([EmberConfig::VM_ROOT, EmberConfig::STATE_DIR,
-        DetachableVolume::IMAGE_ROOT, EmberConfig::TEMPLATE_ROOT, DetachableVolume::ROOT])
+      expect(FileUtils).to receive(:mkdir_p).with([EmberConfig::VM_ROOT, EmberConfig::STATE_DIR, EmberConfig::TEMPLATE_ROOT])
       expect(manager).to receive(:r).with("sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
       expect(manager).to receive(:r).with("sysctl", "-q", "-w", "vm.unprivileged_userfaultfd=1")
       expect(manager).to receive(:safe_write_to_file).with("/etc/systemd/system/ember.slice", /MemoryAccounting=true/)
@@ -157,14 +158,15 @@ RSpec.describe EmberManager do
     end
 
     it "refuses a volume that is not here and has nowhere to read from, rather than lay it out empty" do
-      args = create_args.merge(source: nil)
+      args = create_args.merge(prep: false)
       expect(volume).not_to receive(:ensure_started)
       expect { manager.create(**args) }.to raise_error(EmberManager::NotFound, "volume dv1 is not on this host")
     end
 
-    it "starts a volume that is already here without a source" do
+    it "starts a volume that is already here without laying it out" do
       allow(volume).to receive(:exist?).and_return(true)
-      args = create_args.merge(source: nil)
+      expect(volume).to receive(:ensure_started).with("kek", lay_out: false)
+      args = create_args.merge(prep: false)
       expect(manager.create(**args)["slot"]).to eq(0)
     end
 
@@ -194,9 +196,9 @@ RSpec.describe EmberManager do
       expect(manager.list["slots"]).to be_empty
     end
 
-    it "starts the volume as the slot's user, in the embers' slice, laying it out if it is new" do
-      expect(volume).to receive(:ensure_started).with(kek: "kek", unix_user: "emslot0000", device_id: "cldata", slice: "ember.slice",
-        size_gib: 2, wrapped_xts: "w", source: {"type" => "new", "image" => "seed"})
+    it "starts the volume as the slot's user, laying it out if it is new" do
+      expect(DetachableVolume).to receive(:new).with("dv1", "emslot0000", storage_volume).and_return(volume)
+      expect(volume).to receive(:ensure_started).with("kek", lay_out: true)
       manager.create(**create_args)
     end
   end
@@ -280,13 +282,13 @@ RSpec.describe EmberManager do
 
     it "pauses first, and keeps the volume unless asked otherwise" do
       manager.create(**create_args)
-      expect(volume).not_to receive(:destroy)
+      expect(volume).not_to receive(:delete)
       expect(manager.destroy("ember1", generation: nil, delete_volume: false)).to eq({"destroyed" => true})
     end
 
     it "takes the volume when asked" do
       manager.create(**create_args)
-      expect(volume).to receive(:destroy)
+      expect(volume).to receive(:delete)
       manager.destroy("ember1", generation: nil, delete_volume: true)
     end
   end
@@ -470,7 +472,7 @@ RSpec.describe EmberManager do
     end
 
     it "has no volume to delete" do
-      expect(volume).not_to receive(:destroy)
+      expect(volume).not_to receive(:delete)
       expect(manager.destroy("ember1", generation: nil, delete_volume: true)).to eq({"destroyed" => true})
     end
   end

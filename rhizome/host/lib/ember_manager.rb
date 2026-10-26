@@ -6,6 +6,7 @@ require_relative "ember_config"
 require_relative "slot"
 require_relative "ember_vm"
 require_relative "detachable_volume"
+require_relative "boot_image"
 require "fileutils"
 require "json"
 
@@ -50,8 +51,7 @@ class EmberManager
       Object.const_get(File.basename(path, ".rb").split("_").map(&:capitalize).join).install
     end
 
-    FileUtils.mkdir_p([EmberConfig::VM_ROOT, EmberConfig::STATE_DIR, DetachableVolume::IMAGE_ROOT,
-      EmberConfig::TEMPLATE_ROOT, DetachableVolume::ROOT])
+    FileUtils.mkdir_p([EmberConfig::VM_ROOT, EmberConfig::STATE_DIR, EmberConfig::TEMPLATE_ROOT])
 
     r("sysctl", "-q", "-w", "net.ipv6.conf.all.forwarding=1")
     r("sysctl", "-q", "-w", "vm.unprivileged_userfaultfd=1")
@@ -79,8 +79,8 @@ class EmberManager
     {"ok" => true, "sources" => sources.length}
   end
 
-  def create(ember_id:, generation:, template_id:, workload:, volume_id:, size_gib:, kek:, wrapped_xts:, source:, guest_config:, cpu_percent_limit:)
-    unless source || DetachableVolume.new(volume_id).exist?
+  def create(ember_id:, generation:, template_id:, workload:, volume_id:, kek:, prep:, storage_volume:, guest_config:, cpu_percent_limit:)
+    unless prep || DetachableVolume.new(volume_id).exist?
       fail NotFound, "volume #{volume_id} is not on this host"
     end
 
@@ -96,9 +96,8 @@ class EmberManager
     volume = nil
     vm = nil
     begin
-      volume = DetachableVolume.new(volume_id, ubiblk_version: @ubiblk_version)
-      volume.ensure_started(kek: kek, unix_user: slot.name, device_id: "cldata", slice: "ember.slice",
-        size_gib: size_gib, wrapped_xts: wrapped_xts, source: source)
+      volume = DetachableVolume.new(volume_id, slot.name, storage_volume)
+      volume.ensure_started(kek, lay_out: prep)
       phases[:volume] = elapsed(started)
 
       vm = EmberVm.new(slot, ch_version: @ch_version)
@@ -190,7 +189,7 @@ class EmberManager
 
     volume = volume_for(index)
     pause(ember_id, generation: generation)
-    volume&.destroy if delete_volume
+    volume&.delete if delete_volume
     {"destroyed" => true}
   end
 
@@ -220,9 +219,9 @@ class EmberManager
     {"ok" => true}
   end
 
-  def create_blank(template_id:, workload:, volume_id:, size_gib:, kek:, wrapped_xts:, source:, guest_config:, cpu_percent_limit:)
+  def create_blank(template_id:, workload:, volume_id:, kek:, prep:, storage_volume:, guest_config:, cpu_percent_limit:)
     result = create(ember_id: volume_id, generation: nil, template_id: template_id, workload: workload, volume_id: volume_id,
-      size_gib: size_gib, kek: kek, wrapped_xts: wrapped_xts, source: source, guest_config: guest_config,
+      kek: kek, prep: prep, storage_volume: storage_volume, guest_config: guest_config,
       cpu_percent_limit: cpu_percent_limit)
     record(result.fetch("slot"), ember_id: volume_id, volume_id: volume_id, kind: "blank", template_id: template_id)
     result.merge("volume_id" => volume_id)
@@ -305,7 +304,7 @@ class EmberManager
 
   def volume_for(index)
     volume_id = @slots.dig(index, :volume_id)
-    volume_id && DetachableVolume.new(volume_id, ubiblk_version: @ubiblk_version)
+    volume_id && DetachableVolume.new(volume_id)
   end
 
   def guest_for(workload, slot)
@@ -349,7 +348,7 @@ class EmberManager
     FileUtils.rm_rf(dir)
 
     begin
-      vm.boot(root_image: File.join(DetachableVolume::IMAGE_ROOT, "#{root_image}.raw"), memory_mib: memory_mib, vcpus: vcpus)
+      vm.boot(root_image: BootImage.new(root_image, nil).image_path, memory_mib: memory_mib, vcpus: vcpus)
       vm.wait_serial("CELL-TEMPLATE-READY", timeout: 300)
       sleep 2
       vm.pause_vm

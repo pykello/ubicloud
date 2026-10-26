@@ -16,9 +16,11 @@ RSpec.describe Clover, "postgres ember" do
 
   before { login(user.email) }
 
-  it "offers both types on the PostgreSQL page, and no page of its own" do
+  it "offers both types behind the PostgreSQL page's create button, and no page of its own" do
     visit "#{project.path}/postgres"
     expect(page.title).to eq "Ubicloud - PostgreSQL Databases"
+    click_link "Create PostgreSQL Database"
+    expect(page).to have_content "Dedicated"
     expect(page).to have_content "Ember"
     # Embers are part of the PostgreSQL product, not a section beside it.
     expect(page).to have_no_link "Embers", href: "#{project.path}/postgres-ember"

@@ -113,7 +113,7 @@ module EmberOperations
     volume = ember.detachable_volume
     # A volume already laid out on a host would come up empty anywhere else,
     # so only the hosts it can start on are candidates.
-    candidates = VmHost.ember_candidates_for(template).select { volume.stripe_source_for(it) }
+    candidates = VmHost.ember_candidates_for(template).select { it.ember.volume_payload(volume) }
     errors = []
     errors << "#{volume.vm_host.ubid}, which holds its volume, cannot take it" if candidates.empty? && volume.vm_host
 
@@ -159,17 +159,12 @@ module EmberOperations
   end
 
   def try_host(ember, host, errors, may_claim_blank: false)
-    volume = ember.detachable_volume
     payload = {
       "ember_id" => ember.ubid,
       "generation" => ember.generation,
       "template_id" => ember.ember_template.ubid,
       "cpu_percent_limit" => ember.cpu_percent_limit,
-      "volume" => {
-        "id" => volume.ubid,
-        "size_gib" => volume.size_gib,
-        "source" => volume.stripe_source_for(host),
-      }.merge(volume.key_material),
+      "volume" => host.ember.volume_payload(ember.detachable_volume),
       "workload" => ember.workload,
       "guest" => ember.guest_config,
     }

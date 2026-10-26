@@ -108,10 +108,12 @@ RSpec.describe EmberOperations do
       expect(DetachableVolume.count).to eq(1)
     end
 
-    it "passes the volume's stripe source through, and the guest payload untouched" do
+    it "has a new volume laid out from the template's data image, and passes the guest payload untouched" do
       on_ember_command { |_, kw|
         payload = JSON.parse(kw[:stdin])
-        expect(payload["volume"]["source"]).to eq({"type" => "new", "image" => "cell-pgdata-18"})
+        expect(payload["volume"]["prep"]).to be(true)
+        expect(payload["volume"]["storage_volume"].slice("image", "device_id", "slice_name"))
+          .to eq({"image" => "cell-pgdata-18", "device_id" => "cldata", "slice_name" => "ember.slice"})
         expect(payload["guest"]).to eq({"opaque" => "guest"})
         expect(payload["cpu_percent_limit"]).to eq(50)
         started

@@ -9,32 +9,34 @@
 ) %>
 
 <div class="grid gap-6">
-  <%== part(
-    "components/table_card",
-    headers: ["Name", "Compute", "Storage", "Version", "Parent", "Location", "State", "Created"],
-    rows: @postgres_databases.map do |pg|
-      [
+  <% if @postgres_databases.count > 0 || @postgres_embers.count == 0 %>
+    <%== part(
+      "components/table_card",
+      headers: ["Name", "Compute", "Storage", "Version", "Parent", "Location", "State", "Created"],
+      rows: @postgres_databases.map do |pg|
         [
-          [pg.name, {link: "#{path(pg)}/overview"}],
-          [pg.vm_size],
-          [pg.storage_size_gib],
-          [pg.version],
-          pg.parent ? [pg.parent.name, {link: path(pg.parent)}] : [""],
-          [pg.display_location],
-          ["pg_state_label", {component: { state: pg.display_state }}],
-          [pg.created_at.utc.strftime("%b %d, %Y")]
-        ],
-        {id: "pg-#{pg.ubid}"}
-      ]
-    end,
-    empty_state: {
-      icon: "hero-circle-stack",
-      title: "No PostgreSQL databases",
-      description: "Get started by creating a new PostgreSQL database.",
-      button_link: "#{@project.path}/postgres/create",
-      button_title: "Create PostgreSQL Database"
-    }
-  ) %>
+          [
+            [pg.name, {link: "#{path(pg)}/overview"}],
+            [pg.vm_size],
+            [pg.storage_size_gib],
+            [pg.version],
+            pg.parent ? [pg.parent.name, {link: path(pg.parent)}] : [""],
+            [pg.display_location],
+            ["pg_state_label", {component: { state: pg.display_state }}],
+            [pg.created_at.utc.strftime("%b %d, %Y")]
+          ],
+          {id: "pg-#{pg.ubid}"}
+        ]
+      end,
+      empty_state: {
+        icon: "hero-circle-stack",
+        title: "No PostgreSQL databases",
+        description: "Get started by creating a new PostgreSQL database.",
+        button_link: "#{@project.path}/postgres/create",
+        button_title: "Create PostgreSQL Database"
+      }
+    ) %>
+  <% end %>
 
   <% if @postgres_embers.count > 0 %>
     <%== part(

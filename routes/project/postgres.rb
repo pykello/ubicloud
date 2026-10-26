@@ -31,8 +31,8 @@ class Clover
         # One product, two shapes. The chooser is the default so that neither
         # is buried: dedicated is what production wants, an ember is what a
         # test, a preview or a laptop wants.
-        # A flavor on its own means a dedicated database: the flavor links, and
-        # anything bookmarked before embers existed, still land on the form.
+        # A flavor on its own means a dedicated database, so anything
+        # bookmarked before embers existed still lands on the form.
         flavor = typecast_params.nonempty_str("flavor")
         case typecast_params.nonempty_str("type") || (flavor && "dedicated")
         when "ember"
@@ -41,9 +41,7 @@ class Clover
           view "postgres/ember_create"
         when "dedicated"
           authorize("Postgres:create", @project)
-          # Which flavor is a second question, worth asking only once somebody
-          # has said they want a dedicated database.
-          flavor ? view("postgres/create") : view("postgres/choose_flavor")
+          view "postgres/create"
         else
           authorize("Postgres:view", @project)
           view "postgres/choose_type"
